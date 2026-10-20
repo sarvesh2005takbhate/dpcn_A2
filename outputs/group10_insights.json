@@ -1,0 +1,452 @@
+{
+ "growth_quality": {
+  "IIIT Allahabad": {
+   "annual_growth_pct": 11.9,
+   "growth_ci": [
+    8.8,
+    15.0
+   ],
+   "growth_p": 4.3793315339088465e-05,
+   "papers_2016": 174,
+   "papers_2025": 374,
+   "q1_share_2016_19": 30.2,
+   "q1_share_2022_25": 44.2,
+   "q1_shift_p": 4.117548402644351e-06,
+   "q1_by_year": {
+    "2016": 27.2,
+    "2017": 29.7,
+    "2018": 29.2,
+    "2019": 34.7,
+    "2020": 39.3,
+    "2021": 39.5,
+    "2022": 39.8,
+    "2023": 47.3,
+    "2024": 39.8,
+    "2025": 51.1
+   },
+   "conference_share_2016_19": 44.9,
+   "conference_share_2022_25": 45.0
+  },
+  "ABV-IIITM Gwalior": {
+   "annual_growth_pct": 11.1,
+   "growth_ci": [
+    8.9,
+    13.4
+   ],
+   "growth_p": 6.937567662926826e-06,
+   "papers_2016": 126,
+   "papers_2025": 332,
+   "q1_share_2016_19": 26.2,
+   "q1_share_2022_25": 40.8,
+   "q1_shift_p": 9.113013468656927e-06,
+   "q1_by_year": {
+    "2016": 25.0,
+    "2017": 17.2,
+    "2018": 24.1,
+    "2019": 36.3,
+    "2020": 30.0,
+    "2021": 33.9,
+    "2022": 33.6,
+    "2023": 43.9,
+    "2024": 37.8,
+    "2025": 45.8
+   },
+   "conference_share_2016_19": 38.2,
+   "conference_share_2022_25": 40.0
+  },
+  "IIIT Bangalore": {
+   "annual_growth_pct": 11.7,
+   "growth_ci": [
+    8.9,
+    14.5
+   ],
+   "growth_p": 2.3333647899140142e-05,
+   "papers_2016": 77,
+   "papers_2025": 184,
+   "q1_share_2016_19": 42.5,
+   "q1_share_2022_25": 54.6,
+   "q1_shift_p": 0.07582744142530308,
+   "q1_by_year": {
+    "2016": 50.0,
+    "2017": 35.7,
+    "2018": 35.5,
+    "2019": 50.0,
+    "2020": 50.0,
+    "2021": 47.1,
+    "2022": 64.4,
+    "2023": 70.7,
+    "2024": 52.8,
+    "2025": 38.3
+   },
+   "conference_share_2016_19": 74.6,
+   "conference_share_2022_25": 68.5
+  }
+ },
+ "normalised_impact": {
+  "IIIT Allahabad": {
+   "mncs": 1.013,
+   "mncs_ci": [
+    0.944,
+    1.088
+   ],
+   "median_ncs": 0.577,
+   "pp_top10": 9.2,
+   "pp_top10_journal": 9.5,
+   "pp_top10_conference": 8.7
+  },
+  "ABV-IIITM Gwalior": {
+   "mncs": 1.048,
+   "mncs_ci": [
+    0.982,
+    1.119
+   ],
+   "median_ncs": 0.6,
+   "pp_top10": 11.9,
+   "pp_top10_journal": 11.8,
+   "pp_top10_conference": 12.1
+  },
+  "IIIT Bangalore": {
+   "mncs": 0.901,
+   "mncs_ci": [
+    0.828,
+    0.98
+   ],
+   "median_ncs": 0.48,
+   "pp_top10": 7.5,
+   "pp_top10_journal": 6.0,
+   "pp_top10_conference": 8.2
+  }
+ },
+ "collaboration_premium": {
+  "Indian partner": {
+   "papers": 1740,
+   "mean_ncs": 0.986,
+   "mean_ci": [
+    0.909,
+    1.074
+   ],
+   "median_ncs": 0.542,
+   "mwu_p_vs_single": 0.6927443650989586,
+   "prob_superiority": 0.504
+  },
+  "International": {
+   "papers": 728,
+   "mean_ncs": 1.242,
+   "mean_ci": [
+    1.122,
+    1.374
+   ],
+   "median_ncs": 0.783,
+   "mwu_p_vs_single": 1.7953565346741095e-07,
+   "prob_superiority": 0.563
+  },
+  "Single institute": {
+   "papers": 2597,
+   "mean_ncs": 0.941,
+   "mean_ci": [
+    0.892,
+    0.989
+   ],
+   "median_ncs": 0.542
+  }
+ },
+ "ncs_by_quartile": {
+  "Unranked": 0.144,
+  "Q1": 0.912,
+  "Q2": 0.548,
+  "Q3": 0.37,
+  "Q4": 0.122
+ },
+ "ncs_by_open_access": {
+  "False": 0.556,
+  "True": 0.579
+ },
+ "citation_regression": {
+  "n": 5087,
+  "r2": 0.32,
+  "terms": [
+   {
+    "term": "International co-author",
+    "effect_pct": 1.9,
+    "ci": [
+     -7.2,
+     12.0
+    ],
+    "p": 0.6891149949743797
+   },
+   {
+    "term": "Indian partner co-author",
+    "effect_pct": -9.7,
+    "ci": [
+     -15.5,
+     -3.4
+    ],
+    "p": 0.002775883672682357
+   },
+   {
+    "term": "Team size (log authors)",
+    "effect_pct": 41.9,
+    "ci": [
+     31.6,
+     52.9
+    ],
+    "p": 6.249152280629915e-20
+   },
+   {
+    "term": "Q1 journal",
+    "effect_pct": 137.0,
+    "ci": [
+     117.8,
+     158.0
+    ],
+    "p": 1.1949764144716643e-88
+   },
+   {
+    "term": "Conference paper",
+    "effect_pct": -51.2,
+    "ci": [
+     -54.6,
+     -47.5
+    ],
+    "p": 4.087953981866101e-85
+   },
+   {
+    "term": "Open access",
+    "effect_pct": -0.9,
+    "ci": [
+     -8.5,
+     7.4
+    ],
+    "p": 0.8244049204041556
+   },
+   {
+    "term": "Institution: ABV-IIITM Gwalior",
+    "effect_pct": 13.9,
+    "ci": [
+     6.5,
+     21.9
+    ],
+    "p": 0.00015195274268497332
+   },
+   {
+    "term": "Institution: IIIT Bangalore",
+    "effect_pct": -11.3,
+    "ci": [
+     -17.7,
+     -4.5
+    ],
+    "p": 0.0015418638548016347
+   }
+  ],
+  "controls": "publication-year and field fixed effects"
+ },
+ "concentration": {
+  "IIIT Allahabad": {
+   "gini_citations": 0.733,
+   "top10pct_paper_citation_share": 58.6,
+   "gini_core_faculty_papers": 0.402,
+   "top20pct_faculty_paper_share": 43.1
+  },
+  "ABV-IIITM Gwalior": {
+   "gini_citations": 0.778,
+   "top10pct_paper_citation_share": 63.4,
+   "gini_core_faculty_papers": 0.427,
+   "top20pct_faculty_paper_share": 42.6
+  },
+  "IIIT Bangalore": {
+   "gini_citations": 0.728,
+   "top10pct_paper_citation_share": 57.9,
+   "gini_core_faculty_papers": 0.511,
+   "top20pct_faculty_paper_share": 55.2
+  }
+ },
+ "citation_network": {
+  "internal_edges": 5946,
+  "author_self_citation_pct": 94.0,
+  "same_institution_pct": 97.4,
+  "same_institution_null_pct": 40.3,
+  "same_institution_null_sd": 0.59,
+  "homophily_z": 97.1,
+  "non_self_edges": 355,
+  "pagerank_vs_citations_spearman": 0.531,
+  "pagerank_no_self_top5": [
+   {
+    "title": "Physical Layer Security in Cooperative AF Relaying Networks With Direct Links Over Mixed Rayleigh and Double-Rayleigh Fading Channels",
+    "institution": "IIIT Allahabad",
+    "year": 2018,
+    "pagerank": 0.00088
+   },
+   {
+    "title": "Developing textile entrepreneurial inclination model by integrating experts mining and ISM-MICMAC",
+    "institution": "ABV-IIITM Gwalior",
+    "year": 2018,
+    "pagerank": 0.00077
+   },
+   {
+    "title": "Dual Band Ring Shaped Dielectric Resonator Based Radiator with Left and Right Handed Sense Circularly Polarized Features",
+    "institution": "ABV-IIITM Gwalior",
+    "year": 2020,
+    "pagerank": 0.00077
+   },
+   {
+    "title": "Attacks on a Privacy-Preserving Publish-Subscribe System and a Ride-Hailing Service",
+    "institution": "IIIT Bangalore",
+    "year": 2021,
+    "pagerank": 0.00077
+   },
+   {
+    "title": "Energy-Efficient Logarithmic Square Rooter for Error-Resilient Applications",
+    "institution": "ABV-IIITM Gwalior",
+    "year": 2021,
+    "pagerank": 0.00065
+   }
+  ]
+ },
+ "authorship_network": {
+  "giant_component": 3182,
+  "giant_edges": 8261,
+  "mean_degree": 5.19,
+  "clustering": 0.691,
+  "clustering_random": 0.0016,
+  "path_length": 5.47,
+  "path_length_random": 4.9,
+  "small_world_sigma": 378.7,
+  "modularity": 0.868,
+  "modularity_null": 0.45,
+  "modularity_null_sd": 0.0016,
+  "institution_assortativity": 0.949,
+  "nmi_community_department": 0.379,
+  "nmi_community_institution": 0.424,
+  "core_faculty_n": 165,
+  "core_median_degree": 18.0,
+  "other_median_degree": 3.0,
+  "core_vs_other_p": 3.2830929622633335e-78,
+  "core_share_of_edge_ends_pct": 25.2,
+  "inter_group_author_pairs": 69,
+  "inter_group_papers": 37
+ },
+ "connectivity": {
+  "collab_vs_citation": {
+   "IIIT Allahabad": {
+    "partners": 397,
+    "spearman": 0.669,
+    "p": 5.9642379859883895e-53,
+    "share_in_cites_from_coauthor_partners_pct": 72.5,
+    "share_partners_that_coauthor_pct": 29.8
+   },
+   "ABV-IIITM Gwalior": {
+    "partners": 313,
+    "spearman": 0.691,
+    "p": 9.055706327259083e-46,
+    "share_in_cites_from_coauthor_partners_pct": 71.0,
+    "share_partners_that_coauthor_pct": 30.2
+   },
+   "IIIT Bangalore": {
+    "partners": 185,
+    "spearman": 0.579,
+    "p": 6.4218588715129624e-18,
+    "share_in_cites_from_coauthor_partners_pct": 57.0,
+    "share_partners_that_coauthor_pct": 34.6
+   }
+  },
+  "ratio_by_year": {
+   "IIIT Allahabad": {
+    "2016": 0.057,
+    "2017": 0.267,
+    "2018": 0.408,
+    "2019": 0.466,
+    "2020": 0.435,
+    "2021": 0.552,
+    "2022": 0.702,
+    "2023": 1.145,
+    "2024": 1.183,
+    "2025": 1.347,
+    "2026": 1.724
+   },
+   "ABV-IIITM Gwalior": {
+    "2016": 0.067,
+    "2017": 0.253,
+    "2018": 0.335,
+    "2019": 0.461,
+    "2020": 0.742,
+    "2021": 0.906,
+    "2022": 1.036,
+    "2023": 1.321,
+    "2024": 1.071,
+    "2025": 1.158,
+    "2026": 1.155
+   },
+   "IIIT Bangalore": {
+    "2016": 0.091,
+    "2017": 0.24,
+    "2018": 0.481,
+    "2019": 0.432,
+    "2020": 0.479,
+    "2021": 0.783,
+    "2022": 0.595,
+    "2023": 0.606,
+    "2024": 0.859,
+    "2025": 0.921,
+    "2026": 1.081
+   }
+  },
+  "in_exceeds_out_from": {
+   "IIIT Allahabad": 2023,
+   "ABV-IIITM Gwalior": 2022,
+   "IIIT Bangalore": 2026
+  },
+  "topic_similarity_vs_collaboration": {
+   "spearman": 0.102,
+   "p": 0.5917071017184532,
+   "pairs": 30
+  }
+ },
+ "faculty": {
+  "papers_vs_h_spearman": 0.871,
+  "core_faculty": 169,
+  "lifetime_h_median": 13.0
+ },
+ "flow_totals": {
+  "IIIT Allahabad": 0.936,
+  "ABV-IIITM Gwalior": 0.971,
+  "IIIT Bangalore": 0.691
+ },
+ "findings": [
+  {
+   "title": "Output more than doubled, at the same pace everywhere",
+   "text": "Papers grew 11.9% / 11.1% / 11.7% a year (IIITA / ABV / IIITB, log-linear fit 2016\u20132025, all p < 0.001): IIITA 174\u2192374, ABV 126\u2192332, IIITB 77\u2192184 papers."
+  },
+  {
+   "title": "Quality rose with quantity",
+   "text": "The Q1 share of journal papers rose from 30.2% to 44.2% at IIITA and from 26.2% to 40.8% at ABV between 2016\u201319 and 2022\u201325 (\u03c7\u00b2, p < 0.001). IIITB already started high (42.5% \u2192 54.6%, p = 0.076), so growth did not come at the cost of venue quality."
+  },
+  {
+   "title": "Raw citations exaggerate the gap between institutes",
+   "text": "IIITB's median paper has 2 citations vs 4 at IIITA, but 70% of its output is conference papers. Normalised for year, field and type, mean impact is 1.048 (ABV), 1.013 (IIITA) and 0.901 (IIITB, 95% CI 0.828\u20130.98): a modest, not a large, difference."
+  },
+  {
+   "title": "Impact is carried by a few papers",
+   "text": "Citation Gini is 0.733\u20130.778; the top 10% of papers collect 57.9\u201363.4% of all citations. Among core faculty the top 20% write 42.6\u201355.2% of papers, and output and h-index move together (Spearman \u03c1 = 0.871)."
+  },
+  {
+   "title": "The 'international premium' is really a venue and team-size effect",
+   "text": "Internationally co-authored papers score 1.242 vs 0.941 for single-institute papers (Mann\u2013Whitney p < 0.001). Once venue, type, team size, year and field are held fixed (OLS, n = 5,087), the international effect is +2% (n.s.), while a Q1 venue adds +137%, a conference venue -51%, and doubling the team +27%."
+  },
+  {
+   "title": "Internal citation is almost entirely self-citation",
+   "text": "94.0% of the 5,946 citations between papers of the three institutes share an author, and 97.4% stay inside the citing institute versus 40.3% expected when targets are shuffled (z = 97.1). Only 355 links connect different research groups, so internal PageRank mostly measures group continuity rather than cross-group influence."
+  },
+  {
+   "title": "Three islands: tight groups, almost no IIIT\u2013IIIT collaboration",
+   "text": "The co-authorship network is small-world (clustering 0.691 vs 0.0016 random, path length 5.47 vs 4.9) and strongly modular (Q = 0.868 vs 0.45 \u00b1 0.0016 in degree-preserving random graphs). Institute assortativity is 0.949: only 37 papers link two of the three IIITs. Core faculty have a median of 18 co-authors vs 3 for others."
+  },
+  {
+   "title": "Citations follow collaboration, not topic overlap",
+   "text": "Institutes that co-author more with us also cite us more (Spearman \u03c1 = 0.669 / 0.691 / 0.579, all p < 0.001). Co-author partners are about a third of the Indian institutes that cite us but supply 57.0\u201372.5% of those citations. Topic similarity does not predict who we collaborate with (\u03c1 = 0.102, p = 0.59)."
+  },
+  {
+   "title": "From citation importers to exporters",
+   "text": "Per year, ABV has received more citations from other Indian institutes than it gives since 2022 and IIITA since 2023; IIITB is still below parity (2025 ratio 0.921). Summed over 2016\u20132026, IIITA (0.936) and ABV (0.971) are near balance while IIITB (0.691) remains a net importer of Indian citations."
+  }
+ ]
+}

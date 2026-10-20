@@ -1,0 +1,12 @@
+__pycache__/
+*.pyc
+cache/*.tmp
+cache/_*
+cache/*.log
+.venv/
+venv/
+.streamlit/secrets.toml
+.ipynb_checkpoints/
+.DS_Store
+Thumbs.db
+~$*
