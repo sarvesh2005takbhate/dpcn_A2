@@ -101,7 +101,10 @@ instructor ([example](https://jfmendes-sciart.github.io/research.html)), with
 every element drawn from our own data:
 * a hero banner drawn from the real co-authorship network, with pulses along the
   links between institutes;
-* a summary-of-statistics band with a citations-per-year lollipop chart (peak and
+* a summary-of-statistics band with a **year selector** (From/To, period presets,
+  click a lollipop, or a link such as `?years=2016-2019`) that recomputes papers,
+  citations, h-index, Q1 share, active authors, co-author links and links between
+  institutes for the chosen years, plus a citations-per-year lollipop chart (peak and
   partial year marked);
 * research-interest chips per institute;
 * a scrolling strip of the main partner institutions;

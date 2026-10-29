@@ -117,6 +117,31 @@ def publication_list(df, n=10):
     return out
 
 
+def yearly_data(df, adf, nodes, years):
+    """Compact per-paper records so the page can recompute statistics for any
+    year range: [year, institute bitmask, is_conference, is_Q1, citations,
+    [author indices]]. Authors are anonymous indices with their main institute;
+    co-author links are the author pairs of each paper, exactly as in part2."""
+    bit = {i: 1 << k for k, i in enumerate(C.INST_NAMES)}
+    mask = df.groupby("openalex_id")["institution"].apply(lambda s: sum(bit[i] for i in set(s)))
+    ids = sorted(adf["author_id"].unique())
+    idx = {a: k for k, a in enumerate(ids)}
+    main = [C.INST_NAMES.index(nodes[a]["institution"]) if a in nodes else -1 for a in ids]
+    auth = adf.drop_duplicates(["openalex_id", "author_id"]).groupby("openalex_id")["author_id"].apply(
+        lambda s: sorted(idx[a] for a in s)).to_dict()
+    papers = [[int(r.year), int(mask[r.openalex_id]), int(r.type == "conference"),
+               int(r.type == "journal" and r.quartile == "Q1"), int(r.citations), auth.get(r.openalex_id, [])]
+              for r in A.unique_papers(df).itertuples()]
+    subs = {}
+    for inst in C.INST_NAMES:
+        s = df[(df["institution"] == inst) & (df["subfield"] != "")]
+        t = s.groupby(["subfield", "year"]).size().unstack(fill_value=0).reindex(columns=years, fill_value=0)
+        t = t[t.sum(axis=1) >= 5]
+        subs[inst] = {k: [int(v) for v in row] for k, row in t.iterrows()}
+    top = {str(y): publication_list(df[df["year"] == y]) for y in years}
+    return {"papers": papers, "author_main": main, "subfields": subs, "top_by_year": top}
+
+
 def explorer_graph(o, nd):
     """Co-authorship subgraph for the Network Explorer: the most connected
     authors of each institute plus EVERY author with a co-author at another
@@ -243,6 +268,7 @@ def build_data(o):
     D["cites_by_year"] = citations_by_year(df, years)
     D["partner_cards"] = partner_cards(o["indian"])
     D["publications"] = publication_list(df)
+    D["yearly"] = yearly_data(df, adf, o["auth_metrics"].get("nodes", {}), years)
     S = o["structure"]
     D["structure"] = S
     if nodes and S:
@@ -331,6 +357,9 @@ h2.secttl{font-size:22px;margin:26px 0 4px}
 .seg{display:inline-flex;border:1px solid var(--border);border-radius:8px;overflow:hidden}
 .seg button{border:0;background:var(--surface);color:var(--text-2);font:inherit;font-size:12px;padding:4px 10px;cursor:pointer}
 .seg button.on{background:var(--teal,#2a9d8f);color:#fff}
+.yearbar{display:flex;flex-wrap:wrap;align-items:center;gap:8px 10px;margin:14px 0 2px;padding:10px 12px;background:var(--surface);border:1px solid var(--border);border-radius:10px;font-size:12.5px}
+.yearbar .ylab{font-weight:600;color:var(--text-2);letter-spacing:.06em;text-transform:uppercase;font-size:11px}
+.yearbar .ynote{font-size:11.5px;flex-basis:100%}
 /* interest chips */
 .chiprow{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-bottom:10px}
 .chiprow .lbl{width:64px;font-size:12px;font-weight:600;color:var(--text-2)}
@@ -465,6 +494,12 @@ BODY = r"""
   <section class="statpanel">
     <h2 class="serif">Summary of statistics</h2>
     <p class="muted">Data from <b>OpenAlex</b> (CC0), journal quartiles from <b>Scimago SJR</b>, conference ranks from <b>ICORE2026</b>. <span id="stat-upd"></span></p>
+    <div class="yearbar" id="yearbar">
+      <span class="ylab">Years</span>
+      <select id="y-from" aria-label="From year"></select><span class="muted">to</span><select id="y-to" aria-label="To year"></select>
+      <span class="seg" id="y-presets"></span>
+      <span class="muted ynote">Applies to this band, the institute cards, research interests and selected publications · click a lollipop to pick one year</span>
+    </div>
     <div class="kpis" id="ov-kpis"></div>
     <div class="lolli-head"><span class="muted">Citations received per year</span><span class="seg" id="lolli-sel"></span></div>
     <svg id="lolli" role="img" aria-label="Citations received per year"></svg>
@@ -488,7 +523,7 @@ BODY = r"""
   </div>
   <div class="card" style="margin-bottom:16px"><h3>Research area breakdown</h3><div class="note">% of each institution's papers per OpenAlex field</div><div class="cw tall"><canvas id="c-fields"></canvas></div></div>
   <h2 class="serif secttl">Selected major publications</h2>
-  <p class="muted" style="margin-bottom:10px">The 10 most-cited papers (OpenAlex citation count at collection date). Authors of the three institutes in bold; ↗ opens the DOI.</p>
+  <p class="muted" style="margin-bottom:10px">The 10 most-cited papers of <b id="pub-yrs"></b> (OpenAlex citation count at collection date). Authors of the three institutes in bold; ↗ opens the DOI.</p>
   <div class="publist" id="publist"></div>
 </section>
 <section class="page" id="p-findings">
@@ -732,11 +767,6 @@ const pct = x => (x*100).toFixed(x<0.01?1:0)+"%";
 function renderOverview(){
   const S = Object.fromEntries(D.summary.map(s=>[s.institution,s]));
   document.getElementById("ov-find").innerHTML=(ST.findings||[]).map(f=>`<li><b>${esc(f.title)}.</b> <span>${esc(f.observation)}</span></li>`).join("")||"<li class='muted'>Run part5b_network_structure.py.</li>";
-  document.getElementById("ov-tiles").innerHTML = INST.map(i=>{
-    const s=S[i]; return `<div class="card tile"><div class="lab"><span class="swatch" style="background:${col(i)}"></span>${i}</div>
-      <div class="val">${fmt(s.papers)} papers</div>
-      <div class="foot">${fmt(s.journal_papers)} journal · ${fmt(s.conference_papers)} conference · ${s.q1_journal_pct}% of journal papers in Q1</div>
-      <div class="foot">${fmt(s.citations)} citations (median ${s.median_citations}) · institutional h-index ${s.h_index} · ${s.core_faculty} core faculty</div></div>`;}).join("");
   chart("c-trend",{type:"line",data:{labels:YEARS,datasets:INST.map(i=>({label:i,
       data:YEARS.map((y,k)=>D.trend[i].journal[k]+D.trend[i].conference[k]),
       borderColor:col(i),backgroundColor:col(i),borderWidth:2,pointRadius:3,pointHoverRadius:5,tension:0,
@@ -748,7 +778,7 @@ function renderOverview(){
   chart("c-fields",{type:"bar",data:{labels:D.fields.labels,datasets:INST.map(i=>({label:i,data:D.fields.values[i],
       backgroundColor:col(i),borderRadius:4,borderSkipped:"start",categoryPercentage:.75,barPercentage:.9}))},
       options:baseOpts({scales:{y:{title:{display:true,text:"% of papers",color:css("--text-2")}}}})});
-  renderKpis(); renderLolli("All"); renderChips(); renderMarquee(); renderPubs();
+  setupYears(); renderMarquee();
   setTimeout(renderHero, 30);
 }
 
@@ -756,19 +786,64 @@ function renderOverview(){
 const initials = n => n.replace(/\(.*?\)/g,"").split(/[\s,&-]+/).filter(w=>w.length>2&&!/^(of|and|the|for)$/i.test(w)).slice(0,3).map(w=>w[0].toUpperCase()).join("");
 const CLUSTER_COL = {"IIT":"#2a78d6","NIT":"#eb6834","IIIT":"#1baf7a","IISER/IISc/NISER":"#6250d6","Central University":"#eda100",
   "State/Private University":"#8a6f3a","Industry":"#e87ba4","Medical":"#b3261e","CSIR":"#008300","Govt/Other Research":"#52514e"};
-function renderKpis(){
-  const all=D.summary.find(s=>s.institution.startsWith("All"))||{}, co=ST.coauthorship||{}, mx=ST.mixing||{};
-  const cs=ST.communities||{};
-  const k=[[fmt(all.papers),"publications","unique, 2016–2026"],[fmt(all.citations),"citations","at collection date"],[all.h_index,"h-index","all three institutes"],
-    [fmt(all.core_faculty),"core faculty",`${fmt(all.affiliated_authors)} affiliated authors`],
-    [fmt(co.nodes),"authors · network",`${fmt(co.edges)} co-author links`],
-    [`${fmt(mx.inter_links_total)}`,"links between institutes",`${mx.inter_share_pct}% · ${fmt(Math.round(mx.inter_links_expected_total))} expected at random`],
-    [(cs.single_institute_communities_pct??"–")+"%","single-institute communities",`of ${cs.communities_10plus} with ≥10 authors`]];
-  document.getElementById("ov-kpis").innerHTML=k.map(([v,l,d])=>`<div><b>${v??"–"}</b><span>${l}</span><small>${d}</small></div>`).join("");
+// ── Year filter (Overview) ─────────────────────────────
+let YR=[YEARS[0],YEARS[YEARS.length-1]], LOLLI="All";
+const isAll=()=>YR[0]===YEARS[0]&&YR[1]===YEARS[YEARS.length-1];
+const hidx=c=>{ const s=c.slice().sort((a,b)=>b-a); let h=0; while(h<s.length&&s[h]>=h+1) h++; return h; };
+const median=c=>{ if(!c.length) return 0; const s=c.slice().sort((a,b)=>a-b), m=s.length>>1; return s.length%2?s[m]:(s[m-1]+s[m])/2; };
+function yearStats(bit){
+  const Y=D.yearly, P=Y.papers.filter(p=>p[0]>=YR[0]&&p[0]<=YR[1]&&(!bit||(p[1]&bit)));
+  const cites=P.map(p=>p[4]), j=P.filter(p=>!p[2]), authors=new Set(), links=new Set(); let inter=0, copub=0;
+  P.forEach(p=>{ const a=p[5]; a.forEach(x=>authors.add(x)); if((p[1]&(p[1]-1))!==0) copub++;
+    for(let i=0;i<a.length;i++) for(let k=i+1;k<a.length;k++){ const key=a[i]*8192+a[k];
+      if(!links.has(key)){ links.add(key); if(Y.author_main[a[i]]!==Y.author_main[a[k]]) inter++; } } });
+  return {n:P.length, j:j.length, c:P.length-j.length, q1:j.filter(p=>p[3]).length, cites, sum:cites.reduce((x,y)=>x+y,0),
+          h:hidx(cites), med:median(cites), authors:authors.size, links:links.size, inter, copub};
+}
+function setupYears(){
+  const f=document.getElementById("y-from"), t=document.getElementById("y-to");
+  const opts=YEARS.map(y=>`<option value="${y}">${y}${y===D.meta.partial_year?" (partial)":""}</option>`).join("");
+  f.innerHTML=opts; t.innerHTML=opts;
+  const presets=[["All years",YEARS[0],YEARS[YEARS.length-1]],["2016–19",2016,2019],["2020–22",2020,2022],["2023–26",2023,2026]];
+  const pre=document.getElementById("y-presets");
+  pre.innerHTML=presets.map(([l,a,b])=>`<button data-a="${a}" data-b="${b}">${l}</button>`).join("");
+  pre.onclick=e=>{ if(e.target.dataset.a) setYears(+e.target.dataset.a,+e.target.dataset.b); };
+  f.onchange=()=>setYears(+f.value,Math.max(+f.value,+t.value)); t.onchange=()=>setYears(Math.min(+f.value,+t.value),+t.value);
   document.getElementById("stat-upd").textContent="(collected "+D.meta.generated.slice(0,7)+"; 2026 is a partial year)";
   document.getElementById("foot-upd").textContent="last updated "+D.meta.generated;
+  const q=(new URLSearchParams(location.search).get("years")||"").match(/^(\d{4})(?:-(\d{4}))?$/);
+  if(q){ const a=+q[1], b=+(q[2]||q[1]); if(YEARS.includes(a)&&YEARS.includes(b)&&a<=b) YR=[a,b]; }
+  setYears(YR[0],YR[1]);
+}
+function setYears(a,b){
+  YR=[a,b]; document.getElementById("y-from").value=a; document.getElementById("y-to").value=b;
+  document.querySelectorAll("#y-presets button").forEach(x=>x.classList.toggle("on",+x.dataset.a===a&&+x.dataset.b===b));
+  renderKpis(); renderInstCards(); renderChips(); renderPubs(); renderLolli(LOLLI);
+}
+const yrLabel=()=>YR[0]===YR[1]?String(YR[0]):`${YR[0]}–${YR[1]}`;
+function renderKpis(){
+  if(!D.yearly){ document.getElementById("ov-kpis").innerHTML="<p class='muted'>Yearly data unavailable.</p>"; return; }
+  const s=yearStats(0), mx=ST.mixing||{}, all=isAll();
+  const k=[[fmt(s.n),"publications",`${fmt(s.j)} journal · ${fmt(s.c)} conference`],
+    [fmt(s.sum),"citations",`median ${s.med} per paper`],[s.h,"h-index",`papers of ${yrLabel()}`],
+    [s.j?(100*s.q1/s.j).toFixed(1)+"%":"–","Q1 journal share",`${fmt(s.q1)} Q1 papers`],
+    [fmt(s.authors),"active authors","with ≥1 paper in these years"],
+    [fmt(s.links),"co-author links","author pairs on these papers"],
+    [fmt(s.inter),"links between institutes",all?`${mx.inter_share_pct}% · ${fmt(Math.round(mx.inter_links_expected_total))} expected at random`:(s.links?(100*s.inter/s.links).toFixed(2)+"% of links":"–")],
+    [fmt(s.copub),"co-published by two IIITs","papers listing two institutes"]];
+  document.getElementById("ov-kpis").innerHTML=k.map(([v,l,d])=>`<div><b>${v??"–"}</b><span>${l}</span><small>${d}</small></div>`).join("");
+}
+function renderInstCards(){
+  const S=Object.fromEntries(D.summary.map(s=>[s.institution,s]));
+  document.getElementById("ov-tiles").innerHTML=INST.map((i,k)=>{
+    const s=yearStats(1<<k);
+    return `<div class="card tile"><div class="lab"><span class="swatch" style="background:${col(i)}"></span>${i} · ${yrLabel()}</div>
+      <div class="val">${fmt(s.n)} papers</div>
+      <div class="foot">${fmt(s.j)} journal · ${fmt(s.c)} conference · ${s.j?(100*s.q1/s.j).toFixed(1):"–"}% of journal papers in Q1</div>
+      <div class="foot">${fmt(s.sum)} citations (median ${s.med}) · h-index ${s.h} · ${fmt(s.authors)} active authors · ${S[i].core_faculty} core faculty (all years)</div></div>`;}).join("");
 }
 function renderLolli(which){
+  LOLLI=which; const inR=yr=>yr>=YR[0]&&yr<=YR[1];
   const C_=D.cites_by_year||{}, el=document.getElementById("lolli");
   const sel=document.getElementById("lolli-sel");
   sel.innerHTML=["All",...INST].map(i=>`<button data-i="${i}" class="${i===which?"on":""}">${i==="All"?"All three":AB[i]}</button>`).join("");
@@ -781,17 +856,23 @@ function renderLolli(which){
   const c=which==="All"?css("--teal")||"#007d69":col(which);
   const s=d3.select(el); s.selectAll("*").remove();
   const g=s.selectAll("g").data(full).join("g").attr("transform",d=>`translate(${x(d.yr)},0)`);
-  g.append("line").attr("y1",H-m.b).attr("y2",d=>y(d.v)).attr("stroke",c).attr("stroke-width",1.5).attr("opacity",d=>d.part?.45:1);
-  g.append("circle").attr("cy",d=>y(d.v)).attr("r",d=>d===peak?6:4.5).attr("fill",c).attr("opacity",d=>d.part?.45:1)
+  g.style("cursor","pointer").on("click",(e,d)=>setYears(d.yr,d.yr));
+  g.append("rect").attr("x",-14).attr("width",28).attr("y",m.t-14).attr("height",H-m.t+14).attr("fill","transparent");
+  g.append("line").attr("y1",H-m.b).attr("y2",d=>y(d.v)).attr("stroke",c).attr("stroke-width",1.5).attr("opacity",d=>!inR(d.yr)?.18:d.part?.45:1);
+  g.append("circle").attr("cy",d=>y(d.v)).attr("r",d=>d===peak?6:4.5).attr("fill",c).attr("opacity",d=>!inR(d.yr)?.18:d.part?.45:1)
     .attr("stroke",d=>d===peak?c:"none").attr("stroke-opacity",.3).attr("stroke-width",d=>d===peak?7:0)
-    .on("mousemove",(e,d)=>showTip(e,`<b>${d.yr}</b>${fmt(d.v)} citations received${d.part?" (year in progress)":""}`)).on("mouseleave",hideTip);
+    .on("mousemove",(e,d)=>showTip(e,`<b>${d.yr}</b>${fmt(d.v)} citations received${d.part?" (year in progress)":""}<br>click to show ${d.yr} only`)).on("mouseleave",hideTip);
   g.append("text").attr("y",H-6).attr("text-anchor","middle").attr("font-size",11).attr("fill",d=>d.part?c:css("--muted")).attr("font-weight",d=>d.part?600:400).text(d=>"'"+String(d.yr).slice(2));
   s.append("text").attr("x",x(peak.yr)).attr("y",y(peak.v)-12).attr("text-anchor","middle").attr("font-size",11).attr("fill",c).text("peak");
   document.getElementById("lolli-cap").innerHTML=`Citations received per calendar year by ${which==="All"?"the three institutes' papers":esc(which)+"'s papers"} (OpenAlex counts by year) · peak ${peak.yr}: ${fmt(peak.v)} · ${D.meta.partial_year} in progress`;
 }
 function renderChips(){
-  document.getElementById("chips").innerHTML=INST.map(i=>`<div class="chiprow"><span class="lbl"><span class="swatch" style="background:${col(i)}"></span>${AB[i]}</span>`+
-    (D.subfields[i]||[]).slice(0,8).map(x=>`<span class="chip">${esc(x.name)} <i>${fmt(x.papers)}</i></span>`).join("")+"</div>").join("");
+  const lo=YEARS.indexOf(YR[0]), hi=YEARS.indexOf(YR[1]);
+  document.getElementById("chips").innerHTML=INST.map(i=>{
+    const sf=Object.entries(((D.yearly||{}).subfields||{})[i]||{}).map(([n,v])=>({name:n,papers:v.slice(lo,hi+1).reduce((a,b)=>a+b,0)}))
+      .filter(x=>x.papers>0).sort((a,b)=>b.papers-a.papers).slice(0,8);
+    return `<div class="chiprow"><span class="lbl"><span class="swatch" style="background:${col(i)}"></span>${AB[i]}</span>`+
+      (sf.map(x=>`<span class="chip">${esc(x.name)} <i>${fmt(x.papers)}</i></span>`).join("")||"<span class='muted'>No papers in these years.</span>")+"</div>";}).join("");
 }
 function renderMarquee(){
   const P=D.partner_cards||[], tr=document.getElementById("mq-track");
@@ -802,7 +883,9 @@ function renderMarquee(){
   const html=P.map(card).join(""); tr.innerHTML=html+html;   // duplicated for a seamless loop
 }
 function renderPubs(){
-  const P=D.publications||[];
+  const T=(D.yearly||{}).top_by_year||{};
+  const P=isAll()?(D.publications||[]):YEARS.filter(y=>y>=YR[0]&&y<=YR[1]).flatMap(y=>T[y]||[]).sort((a,b)=>b.citations-a.citations).slice(0,10);
+  document.getElementById("pub-yrs").textContent=yrLabel();
   document.getElementById("publist").innerHTML=P.map(p=>{
     const doi=p.doi?(p.doi.startsWith("http")?p.doi:"https://doi.org/"+p.doi):"";
     const au=p.authors.map(a=>a.o?`<b>${esc(a.n)}</b>`:esc(a.n)).join(", ")+(p.more?`, … +${p.more} more`:"");
