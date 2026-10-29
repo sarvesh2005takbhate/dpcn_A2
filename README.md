@@ -7,7 +7,7 @@ A network-science study of the research output of **IIIT Allahabad (IIITA)**,
 OpenAlex. It covers citation and co-authorship networks, statistical baselines,
 an interactive dashboard, and a 5-page report.
 
-* **Live dashboard: <https://cozy-kitsune-3c4e7e.netlify.app/>** (Netlify)
+* **Live dashboard: <https://heroic-gumdrop-32cb8b.netlify.app/>** (Netlify)
 * **Report:** [10_IIIT.pdf](10_IIIT.pdf) (5 pages)
 * **Decision log:** [DECISIONS.md](DECISIONS.md)
 
@@ -274,7 +274,7 @@ the numbers above.
 
 ## Deployment
 
-**Live:** <https://cozy-kitsune-3c4e7e.netlify.app/>, hosted on Netlify and
+**Live:** <https://heroic-gumdrop-32cb8b.netlify.app/>, hosted on Netlify and
 deployed with Netlify Drop from a local build of `site/`. It was checked after
 deployment: the served page matches the local build apart from a comment Netlify
 adds, and every page renders without errors.
