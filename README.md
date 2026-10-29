@@ -96,6 +96,19 @@ page per institute (faculty table, h-index, quartiles, top venues, departments,
 most-cited papers) · Network explorer · Network analysis · Citation network ·
 Indian connectivity · Course connections · Data & methods.
 
+The Overview follows the layout of a research-profile page suggested by the
+instructor ([example](https://jfmendes-sciart.github.io/research.html)), with
+every element drawn from our own data:
+* a hero banner drawn from the real co-authorship network, with pulses along the
+  links between institutes;
+* a summary-of-statistics band with a citations-per-year lollipop chart (peak and
+  partial year marked);
+* research-interest chips per institute;
+* a scrolling strip of the main partner institutions;
+* a "selected publications" list of the 10 most-cited papers.
+
+The Network explorer adds a top-N selector and summary counters.
+
 ## Dataset and privacy
 
 **What it is.** One row per (paper, assigned institute) for every journal or

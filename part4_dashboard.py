@@ -60,6 +60,63 @@ def records(df):
     return json.loads(df.to_json(orient="records", force_ascii=False))
 
 
+def citations_by_year(df, years):
+    """Citations RECEIVED in each calendar year by the papers of each institute
+    (OpenAlex counts_by_year of the canonical record). Needs the private cache;
+    returns {} if it is absent so the dashboard still builds."""
+    works = C.load_json_gz(C.WORKS_CACHE, {}).get("works", {})
+    if not works:
+        return {}
+    out = {}
+    groups = [(i, df[df["institution"] == i]) for i in C.INST_NAMES] + [("All", A.unique_papers(df))]
+    for name, s in groups:
+        tot = Counter()
+        for wid in s["openalex_id"].unique():
+            for y, n in (works.get(wid, {}).get("counts_by_year") or {}).items():
+                tot[int(y)] += n
+        out[name] = [int(tot.get(y, 0)) for y in years]
+    return out
+
+
+def partner_cards(indian, n=14):
+    """Indian partner institutions with the most papers co-authored with the three IIITs."""
+    if indian.empty:
+        return []
+    ind = indian[~indian["intra_group"].astype(str).str.upper().eq("TRUE")].copy()
+    for c in ("shared_papers", "citations_received_from_partner"):
+        ind[c] = ind[c].astype(int)
+    ind = ind[ind["shared_papers"] > 0]
+    tot = ind.groupby("partner_openalex_id")["shared_papers"].sum().sort_values(ascending=False).head(n)
+    cards = []
+    for pid, total in tot.items():
+        g = ind[ind["partner_openalex_id"] == pid]
+        cards.append({"name": g["partner_inst"].iloc[0], "cluster": g["partner_cluster"].iloc[0], "total": int(total),
+                      "by_inst": {r.your_inst: int(r.shared_papers) for r in g.itertuples()},
+                      "cites_in": int(g["citations_received_from_partner"].sum())})
+    return cards
+
+
+def publication_list(df, n=10):
+    """Most-cited papers with their full author list; authors of the three
+    institutes are flagged so the page can highlight them."""
+    s = df.sort_values("citations", ascending=False)
+    out = []
+    for wid, g in s.groupby("openalex_id", sort=False):
+        r = g.iloc[0]
+        ours = {a.strip() for x in g["author"] for a in str(x).split(";") if a.strip()}
+        names = [a.strip() for a in str(r["all_authors"]).split(";") if a.strip()]
+        shown = names[:8]
+        # keep our authors visible even in long author lists
+        shown += [a for a in names[8:] if a in ours and a not in shown][:3]
+        out.append({"title": r["title"], "year": int(r["year"]), "venue": r["journal_name"], "type": r["type"],
+                    "quartile": r["quartile"], "citations": int(r["citations"]), "doi": r["doi"],
+                    "insts": sorted(g["institution"]), "authors": [{"n": a, "o": a in ours} for a in shown],
+                    "more": max(0, len(names) - len(shown)), "mega": bool(r["is_hyperauthored"])})
+        if len(out) == n:
+            break
+    return out
+
+
 def explorer_graph(o, nd):
     """Co-authorship subgraph for the Network Explorer: the most connected
     authors of each institute plus EVERY author with a co-author at another
@@ -114,7 +171,6 @@ def build_data(o):
                       for i in C.INST_NAMES}
     D["top_journals"] = {i: records(A.top_venues(df, i, "journal", 5)) for i in C.INST_NAMES}
     D["top_conferences"] = {i: records(A.top_venues(df, i, "conference", 5)) for i in C.INST_NAMES}
-    D["most_cited"] = records(A.most_cited(df, 10))
     D["most_cited_inst"] = {i: records(A.most_cited(df, 10, i)) for i in C.INST_NAMES}
     age = A.citation_age(df)
     D["citation_age"] = {i: [float(age[(age.institution == i) & (age.year == y)]["median"].sum()) for y in years]
@@ -184,6 +240,9 @@ def build_data(o):
                                          for i in C.INST_NAMES}}
     D["jaccard"] = records(o["jaccard"]) if not o["jaccard"].empty else []
     D["insights"] = o["insights"]
+    D["cites_by_year"] = citations_by_year(df, years)
+    D["partner_cards"] = partner_cards(o["indian"])
+    D["publications"] = publication_list(df)
     S = o["structure"]
     D["structure"] = S
     if nodes and S:
@@ -200,9 +259,10 @@ def build_data(o):
 CSS = r"""
 :root{
   color-scheme: light;
-  --bg:#f4f3ef; --surface:#fcfcfb; --surface-2:#f1f0ec; --border:#e4e3df;
-  --text:#0b0b0b; --text-2:#52514e; --muted:#8a8984; --accent:#2a78d6;
-  --grid:#e4e3df;
+  --bg:#f8fafc; --surface:#ffffff; --surface-2:#f1f5f9; --border:#e2e8f0;
+  --text:#102a43; --text-2:#334e68; --muted:#627d98; --accent:#0b69a3;
+  --grid:#e2e8f0; --teal:#007d69; --teal-bg:#f0f7f5;
+  --serif:"Newsreader",Georgia,"Times New Roman",serif;
   --s1:#2a78d6; --s2:#eb6834; --s3:#1baf7a; --s4:#eda100; --s5:#e87ba4; --s6:#008300; --s7:#6250d6;
   --other:#b5b4ae;
   --t1:#184f95; --t2:#2a78d6; --t3:#5598e7; --t4:#86b6ef; --t5:#c9c8c2;
@@ -213,7 +273,7 @@ CSS = r"""
     --bg:#121211; --surface:#1a1a19; --surface-2:#232321; --border:#33332f;
     --text:#f0efec; --text-2:#c3c2b7; --muted:#8f8e86; --accent:#3987e5; --grid:#2c2c29;
     --s1:#3987e5; --s2:#d95926; --s3:#199e70; --s4:#c98500; --s5:#d55181; --s6:#008300; --s7:#9085e9;
-    --other:#5d5c57;
+    --other:#5d5c57; --teal:#4fb3a1; --teal-bg:#141f1d;
     --t1:#86b6ef; --t2:#5598e7; --t3:#2a78d6; --t4:#1c5cab; --t5:#4a4a46;
   }
 }
@@ -222,11 +282,11 @@ CSS = r"""
   --bg:#121211; --surface:#1a1a19; --surface-2:#232321; --border:#33332f;
   --text:#f0efec; --text-2:#c3c2b7; --muted:#8f8e86; --accent:#3987e5; --grid:#2c2c29;
   --s1:#3987e5; --s2:#d95926; --s3:#199e70; --s4:#c98500; --s5:#d55181; --s6:#008300; --s7:#9085e9;
-  --other:#5d5c57;
+  --other:#5d5c57; --teal:#4fb3a1; --teal-bg:#141f1d;
   --t1:#86b6ef; --t2:#5598e7; --t3:#2a78d6; --t4:#1c5cab; --t5:#4a4a46;
 }
 *{box-sizing:border-box;margin:0;padding:0}
-body{font-family:system-ui,-apple-system,"Segoe UI",sans-serif;background:var(--bg);color:var(--text);
+body{font-family:"Inter",system-ui,-apple-system,"Segoe UI",sans-serif;background:var(--bg);color:var(--text);
   display:flex;min-height:100vh;font-size:14px;line-height:1.45}
 #side{width:240px;flex-shrink:0;background:var(--surface);border-right:1px solid var(--border);
   position:sticky;top:0;height:100vh;overflow-y:auto;padding:18px 0}
@@ -241,7 +301,68 @@ body{font-family:system-ui,-apple-system,"Segoe UI",sans-serif;background:var(--
   background:var(--surface);color:var(--text-2);font:inherit;font-size:12px;cursor:pointer}
 #main{flex:1;min-width:0;padding:24px 28px 60px}
 .page{display:none}.page.on{display:block}
-h1{font-size:22px;margin-bottom:2px}.sub{color:var(--text-2);margin-bottom:18px}
+h1{font-family:var(--serif);font-weight:500;font-size:30px;line-height:1.15;margin-bottom:4px;letter-spacing:-.01em}
+.page>h1::after{content:"";display:block;width:42px;height:2px;background:var(--teal,#2a9d8f);margin:10px 0 6px}
+.serif{font-family:var(--serif);font-weight:500}
+h2.secttl{font-size:22px;margin:26px 0 4px}
+/* hero */
+.hero{position:relative;overflow:hidden;background:#020814;color:#f1f5f9;border-radius:14px;margin:-4px 0 18px;min-height:300px;display:flex;align-items:flex-end}
+.hero svg{position:absolute;inset:0;width:100%;height:100%}
+.hero-txt{position:relative;padding:28px 30px 34px;max-width:860px;
+  background:linear-gradient(90deg,rgba(2,8,20,.82) 0%,rgba(2,8,20,.55) 70%,rgba(2,8,20,0) 100%)}
+.hero h1{color:#fff;font-size:38px;margin-bottom:8px}.hero h1::after{display:none}
+.eyebrow{font-size:11.5px;letter-spacing:.12em;text-transform:uppercase;color:#7dd4c4;margin-bottom:8px}
+.tagline{font-family:var(--serif);font-style:italic;font-size:21px;line-height:1.35;color:#e2e8f0;margin-bottom:10px}
+.hero-sub{font-size:13px;color:#9fb3c8}
+.hero-cap{position:absolute;right:12px;bottom:8px;font-size:10.5px;color:#627d98}
+@keyframes pulse{to{stroke-dashoffset:-140}}
+.hero .pl{stroke-dasharray:6 134;animation:pulse 3.2s linear infinite}
+@media (prefers-reduced-motion:reduce){.hero .pl{animation:none;stroke-dasharray:none}.mq-track{animation:none!important}}
+/* summary of statistics */
+.statpanel{background:var(--teal-bg,#14211e);border:1px solid var(--border);border-radius:12px;padding:24px 28px 18px;margin-bottom:16px}
+.statpanel h2{color:var(--teal,#7dd4c4);font-size:24px;margin-bottom:4px}
+.kpis{display:flex;flex-wrap:wrap;gap:22px 48px;margin:18px 0 20px}
+.kpis div b{display:block;font-size:28px;font-weight:400;color:var(--text);font-variant-numeric:tabular-nums}
+.kpis div small{display:block;font-size:11.5px;color:var(--muted);margin-top:1px}
+.kpis div span{font-size:11px;letter-spacing:.09em;text-transform:uppercase;color:var(--muted)}
+.lolli-head{display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;font-size:12.5px}
+#lolli{width:100%;height:170px;display:block}
+.lolli-cap{text-align:center;font-size:12.5px;color:var(--text-2);margin-top:2px}
+.seg{display:inline-flex;border:1px solid var(--border);border-radius:8px;overflow:hidden}
+.seg button{border:0;background:var(--surface);color:var(--text-2);font:inherit;font-size:12px;padding:4px 10px;cursor:pointer}
+.seg button.on{background:var(--teal,#2a9d8f);color:#fff}
+/* interest chips */
+.chiprow{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-bottom:10px}
+.chiprow .lbl{width:64px;font-size:12px;font-weight:600;color:var(--text-2)}
+.chip{display:inline-flex;align-items:center;gap:6px;padding:6px 14px;border:1px solid var(--border);border-radius:999px;background:var(--surface);font-size:13px;color:var(--text)}
+.chip i{font-style:normal;font-size:11px;color:var(--muted)}
+/* marquee */
+.mq-head{display:flex;justify-content:space-between;align-items:baseline;gap:10px;margin:26px 0 10px;font-size:12px}
+.marquee{overflow:hidden;margin-bottom:22px;-webkit-mask-image:linear-gradient(90deg,transparent,#000 6%,#000 94%,transparent);mask-image:linear-gradient(90deg,transparent,#000 6%,#000 94%,transparent)}
+.mq-track{display:flex;gap:18px;width:max-content;animation:mq 70s linear infinite;padding:4px 0}
+.marquee:hover .mq-track{animation-play-state:paused}
+@keyframes mq{to{transform:translateX(-50%)}}
+.pcard{width:290px;flex-shrink:0;background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:14px 16px}
+.pcard .top{display:flex;gap:12px;align-items:center;margin-bottom:10px}
+.mono{width:40px;height:40px;border-radius:50%;flex-shrink:0;display:flex;align-items:center;justify-content:center;color:#fff;font-weight:600;font-size:13px}
+.pcard b{display:block;font-size:13.5px;line-height:1.25}.pcard small{color:var(--muted);font-size:11.5px}
+.pcard .bot{display:flex;gap:6px;flex-wrap:wrap;border-top:1px solid var(--border);padding-top:9px}
+.badge{display:inline-block;padding:3px 8px;border-radius:6px;background:#e1f0fa;color:#0b69a3;font-size:11.5px;font-weight:600}
+.badge.g{background:var(--surface-2);color:var(--text-2);font-weight:500}
+/* publication list */
+.publist{background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:6px 24px;margin-bottom:16px}
+.pub{display:flex;justify-content:space-between;gap:16px;padding:16px 0;border-bottom:1px solid var(--border)}
+.pub:last-child{border-bottom:0}
+.pub h4{font-size:14.5px;font-weight:500;margin-bottom:4px}.pub h4 a{color:var(--text)}
+.pub .au{font-size:13px;color:var(--text-2)}.pub .au b{color:var(--text);font-weight:600}
+.pub .ven{font-size:12.5px;color:var(--muted);font-style:italic;margin-top:2px}
+.pub .side{display:flex;flex-direction:column;align-items:flex-end;gap:6px;flex-shrink:0}
+/* explorer stats */
+.netstats{display:flex;gap:44px;flex-wrap:wrap;margin:4px 0 14px}
+.netstats b{display:block;font-size:30px;font-weight:400;color:var(--accent);font-variant-numeric:tabular-nums}
+.netstats span{font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:var(--muted)}
+.hint{font-size:12px;color:var(--muted);margin-top:8px}
+.pagefoot{margin-top:34px;padding-top:14px;border-top:1px solid var(--border);font-size:12px;color:var(--muted)}.sub{color:var(--text-2);margin-bottom:18px}
 .grid{display:grid;gap:16px;margin-bottom:16px}
 .g2{grid-template-columns:repeat(2,minmax(0,1fr))}.g3{grid-template-columns:repeat(3,minmax(0,1fr))}
 .g4{grid-template-columns:repeat(4,minmax(0,1fr))}.g6{grid-template-columns:repeat(6,minmax(0,1fr))}
@@ -326,15 +447,35 @@ BODY = r"""
 </nav>
 <main id="main">
 <section class="page on" id="p-overview">
-  <h1>Research output of three IIITs</h1>
-  <div class="sub">IIIT Allahabad · ABV-IIITM Gwalior · IIIT Bangalore — journal and conference papers 2016–2026 (OpenAlex)</div>
+  <header class="hero">
+    <svg id="hero-net" aria-hidden="true"></svg>
+    <div class="hero-txt">
+      <div class="eyebrow">DPCN 2026 · Group 10 · Research mapping</div>
+      <h1>Research output of three IIITs</h1>
+      <p class="tagline">Three institutes, one connected network — held together by a handful of people.</p>
+      <div class="hero-sub">IIIT Allahabad · ABV-IIITM Gwalior · IIIT Bangalore — journal and conference papers 2016–2026 (OpenAlex)</div>
+    </div>
+    <div class="hero-cap">Background: the real co-authorship network (Network explorer view); pulses run along links between institutes</div>
+  </header>
   <div class="card lead" style="margin-bottom:16px">
     <h3>Research question</h3>
     <p>How do the research networks of IIIT Allahabad, ABV-IIITM Gwalior and IIIT Bangalore compare, and how — and through whom — are the three institutes connected to each other?</p>
     <p class="note" style="margin-top:6px">A node in the co-authorship network is an author affiliated with one of the institutes on at least one paper; an edge means two such authors co-wrote at least one paper (undirected, weighted by joint papers). A node in the citation network is a paper; an edge A → B means A lists B in its references (directed, unweighted). Edges do not measure friendship, funding or influence beyond these definitions.</p>
   </div>
-  <div class="grid g4" id="ov-net"></div>
+  <section class="statpanel">
+    <h2 class="serif">Summary of statistics</h2>
+    <p class="muted">Data from <b>OpenAlex</b> (CC0), journal quartiles from <b>Scimago SJR</b>, conference ranks from <b>ICORE2026</b>. <span id="stat-upd"></span></p>
+    <div class="kpis" id="ov-kpis"></div>
+    <div class="lolli-head"><span class="muted">Citations received per year</span><span class="seg" id="lolli-sel"></span></div>
+    <svg id="lolli" role="img" aria-label="Citations received per year"></svg>
+    <p class="lolli-cap" id="lolli-cap"></p>
+  </section>
   <div class="card" style="margin-bottom:16px"><h3>Main structural findings</h3><div class="note">Full evidence, interpretation and caveats on the Findings &amp; modelling page</div><ol class="flist" id="ov-find"></ol></div>
+  <h2 class="serif secttl">Research interests</h2>
+  <p class="muted" style="margin-bottom:10px">Largest research areas of each institute (OpenAlex subfield of each paper's primary topic; number = papers)</p>
+  <div id="chips" style="margin-bottom:22px"></div>
+  <div class="mq-head"><h2 class="serif secttl" style="margin:0">Key collaborating institutions</h2><span class="muted">Hover to pause · scrolling continuously</span></div>
+  <div class="marquee" id="marquee" aria-label="Indian partner institutions with the most co-authored papers"><div class="mq-track" id="mq-track"></div></div>
   <div class="warn">2026 is a partial year (data collected during 2026); recent papers have had little time to be cited.</div>
   <div class="grid g3" id="ov-tiles"></div>
   <div class="grid g2">
@@ -346,7 +487,9 @@ BODY = r"""
     <div class="card"><h3>Conference rank (CORE)</h3><div class="note">ICORE2026 rank, % of conference papers</div><div class="cw"><canvas id="c-core"></canvas></div></div>
   </div>
   <div class="card" style="margin-bottom:16px"><h3>Research area breakdown</h3><div class="note">% of each institution's papers per OpenAlex field</div><div class="cw tall"><canvas id="c-fields"></canvas></div></div>
-  <div class="card"><h3>Top 10 most-cited papers</h3><div class="note">OpenAlex citation count at collection date</div><div class="tw"><table id="t-cited"></table></div></div>
+  <h2 class="serif secttl">Selected major publications</h2>
+  <p class="muted" style="margin-bottom:10px">The 10 most-cited papers (OpenAlex citation count at collection date). Authors of the three institutes in bold; ↗ opens the DOI.</p>
+  <div class="publist" id="publist"></div>
 </section>
 <section class="page" id="p-findings">
   <h1>Findings &amp; modelling</h1>
@@ -389,19 +532,22 @@ BODY = r"""
 <section class="page" id="p-explorer">
   <h1>Network explorer</h1>
   <div class="sub">Co-authorship network: the %EXPN% most connected authors of each institute plus every author with ties to another institute. Bridge authors are deliberately over-represented here; all mixing statistics use the full network.</div>
+  <div class="netstats"><div><b id="ns-a">–</b><span>authors shown</span></div><div><b id="ns-l">–</b><span>co-author links</span></div><div><b id="ns-x">–</b><span>links between institutes</span></div><div><b id="ns-b">–</b><span>bridge authors</span></div></div>
   <div class="card" style="margin-bottom:16px">
     <div class="controls" id="ex-ctl">
+      <label>Show <select id="ex-top"><option value="25">top 25</option><option value="50">top 50</option><option value="100000" selected>all</option></select> authors per institute (by degree)</label>
       <span id="ex-inst"></span>
       <label>Colour <select id="ex-col"><option value="i">institution</option><option value="c">Louvain community</option></select></label>
       <label><input type="checkbox" id="ex-br"> bridges and their co-authors only</label>
       <input type="search" id="ex-q" placeholder="Find an author">
-      <span id="ex-n" class="muted"></span>
+      <span id="ex-n" class="muted" hidden></span>
     </div>
     <div class="exwrap">
       <div class="net" id="net-ex"></div>
       <aside class="detail" id="ex-detail"><p class="muted">Click an author to see their position in the network.</p></aside>
     </div>
     <div class="legend" id="leg-ex"></div>
+    <p class="hint">Drag nodes · scroll to zoom · hover for name and numbers · click for co-authors. Bridge authors are always shown.</p>
   </div>
 </section>
 <section class="page" id="p-course">
@@ -497,6 +643,7 @@ BODY = r"""
   <div class="sub">How every number on this dashboard is produced</div>
   <div class="card"><ul class="defs" id="defs"></ul></div>
 </section>
+<footer class="pagefoot">© 2026 Group 10 · Team Titan Mandal (Hrishikesh, Sarvesh, Shourya) · DPCN course, instructor Chittaranjan Hens · Data: OpenAlex (CC0), Scimago SJR, ICORE2026 · <span id="foot-upd"></span></footer>
 </main>
 <div class="tip" id="tip"></div>
 <div class="errbar" id="errbar" role="alert"></div>
@@ -584,13 +731,6 @@ const AB = {"IIIT Allahabad":"IIITA","ABV-IIITM Gwalior":"ABV","IIIT Bangalore":
 const pct = x => (x*100).toFixed(x<0.01?1:0)+"%";
 function renderOverview(){
   const S = Object.fromEntries(D.summary.map(s=>[s.institution,s]));
-  const co=ST.coauthorship||{}, mx=ST.mixing||{}, cs=ST.communities||{};
-  const uniq=D.summary.find(s=>s.institution.startsWith("All"))||{};
-  document.getElementById("ov-net").innerHTML=[
-    tile("Papers (unique)",fmt(uniq.papers),`${fmt(mx.inter_papers)} papers link authors of two IIITs`),
-    tile("Authors · co-author links",`${fmt(co.nodes)} · ${fmt(co.edges)}`,`giant component ${co.giant_share_pct}% · ${fmt(co.components)} components`),
-    tile("Links between institutes",`${fmt(mx.inter_links_total)} <span class="muted" style="font-size:13px">(${mx.inter_share_pct}%)</span>`,`${fmt(Math.round(mx.inter_links_expected_total))} expected under random mixing with the same degrees`),
-    tile("Single-institute communities",(cs.single_institute_communities_pct??"–")+"%",`of ${cs.communities_10plus} Louvain communities with ≥10 authors`)].join("");
   document.getElementById("ov-find").innerHTML=(ST.findings||[]).map(f=>`<li><b>${esc(f.title)}.</b> <span>${esc(f.observation)}</span></li>`).join("")||"<li class='muted'>Run part5b_network_structure.py.</li>";
   document.getElementById("ov-tiles").innerHTML = INST.map(i=>{
     const s=S[i]; return `<div class="card tile"><div class="lab"><span class="swatch" style="background:${col(i)}"></span>${i}</div>
@@ -608,7 +748,88 @@ function renderOverview(){
   chart("c-fields",{type:"bar",data:{labels:D.fields.labels,datasets:INST.map(i=>({label:i,data:D.fields.values[i],
       backgroundColor:col(i),borderRadius:4,borderSkipped:"start",categoryPercentage:.75,barPercentage:.9}))},
       options:baseOpts({scales:{y:{title:{display:true,text:"% of papers",color:css("--text-2")}}}})});
-  citedTable("t-cited", D.most_cited, true);
+  renderKpis(); renderLolli("All"); renderChips(); renderMarquee(); renderPubs();
+  setTimeout(renderHero, 30);
+}
+
+// ── Overview: reference-style sections ─────────────────
+const initials = n => n.replace(/\(.*?\)/g,"").split(/[\s,&-]+/).filter(w=>w.length>2&&!/^(of|and|the|for)$/i.test(w)).slice(0,3).map(w=>w[0].toUpperCase()).join("");
+const CLUSTER_COL = {"IIT":"#2a78d6","NIT":"#eb6834","IIIT":"#1baf7a","IISER/IISc/NISER":"#6250d6","Central University":"#eda100",
+  "State/Private University":"#8a6f3a","Industry":"#e87ba4","Medical":"#b3261e","CSIR":"#008300","Govt/Other Research":"#52514e"};
+function renderKpis(){
+  const all=D.summary.find(s=>s.institution.startsWith("All"))||{}, co=ST.coauthorship||{}, mx=ST.mixing||{};
+  const cs=ST.communities||{};
+  const k=[[fmt(all.papers),"publications","unique, 2016–2026"],[fmt(all.citations),"citations","at collection date"],[all.h_index,"h-index","all three institutes"],
+    [fmt(all.core_faculty),"core faculty",`${fmt(all.affiliated_authors)} affiliated authors`],
+    [fmt(co.nodes),"authors · network",`${fmt(co.edges)} co-author links`],
+    [`${fmt(mx.inter_links_total)}`,"links between institutes",`${mx.inter_share_pct}% · ${fmt(Math.round(mx.inter_links_expected_total))} expected at random`],
+    [(cs.single_institute_communities_pct??"–")+"%","single-institute communities",`of ${cs.communities_10plus} with ≥10 authors`]];
+  document.getElementById("ov-kpis").innerHTML=k.map(([v,l,d])=>`<div><b>${v??"–"}</b><span>${l}</span><small>${d}</small></div>`).join("");
+  document.getElementById("stat-upd").textContent="(collected "+D.meta.generated.slice(0,7)+"; 2026 is a partial year)";
+  document.getElementById("foot-upd").textContent="last updated "+D.meta.generated;
+}
+function renderLolli(which){
+  const C_=D.cites_by_year||{}, el=document.getElementById("lolli");
+  const sel=document.getElementById("lolli-sel");
+  sel.innerHTML=["All",...INST].map(i=>`<button data-i="${i}" class="${i===which?"on":""}">${i==="All"?"All three":AB[i]}</button>`).join("");
+  sel.onclick=e=>{ if(e.target.dataset.i) renderLolli(e.target.dataset.i); };
+  if(!C_[which]){ el.innerHTML=""; document.getElementById("lolli-cap").textContent="Citations per year need the private OpenAlex cache at build time."; return; }
+  const vals=C_[which], W=el.clientWidth||900, H=170, m={l:30,r:30,t:26,b:24};
+  const x=d3.scalePoint().domain(YEARS).range([m.l+40,W-m.r-40]), y=d3.scaleLinear().domain([0,d3.max(vals)||1]).range([H-m.b,m.t]);
+  const full=YEARS.map((yr,i)=>({yr,v:vals[i],part:yr===D.meta.partial_year}));
+  const peak=full.filter(d=>!d.part).reduce((a,b)=>b.v>a.v?b:a);
+  const c=which==="All"?css("--teal")||"#007d69":col(which);
+  const s=d3.select(el); s.selectAll("*").remove();
+  const g=s.selectAll("g").data(full).join("g").attr("transform",d=>`translate(${x(d.yr)},0)`);
+  g.append("line").attr("y1",H-m.b).attr("y2",d=>y(d.v)).attr("stroke",c).attr("stroke-width",1.5).attr("opacity",d=>d.part?.45:1);
+  g.append("circle").attr("cy",d=>y(d.v)).attr("r",d=>d===peak?6:4.5).attr("fill",c).attr("opacity",d=>d.part?.45:1)
+    .attr("stroke",d=>d===peak?c:"none").attr("stroke-opacity",.3).attr("stroke-width",d=>d===peak?7:0)
+    .on("mousemove",(e,d)=>showTip(e,`<b>${d.yr}</b>${fmt(d.v)} citations received${d.part?" (year in progress)":""}`)).on("mouseleave",hideTip);
+  g.append("text").attr("y",H-6).attr("text-anchor","middle").attr("font-size",11).attr("fill",d=>d.part?c:css("--muted")).attr("font-weight",d=>d.part?600:400).text(d=>"'"+String(d.yr).slice(2));
+  s.append("text").attr("x",x(peak.yr)).attr("y",y(peak.v)-12).attr("text-anchor","middle").attr("font-size",11).attr("fill",c).text("peak");
+  document.getElementById("lolli-cap").innerHTML=`Citations received per calendar year by ${which==="All"?"the three institutes' papers":esc(which)+"'s papers"} (OpenAlex counts by year) · peak ${peak.yr}: ${fmt(peak.v)} · ${D.meta.partial_year} in progress`;
+}
+function renderChips(){
+  document.getElementById("chips").innerHTML=INST.map(i=>`<div class="chiprow"><span class="lbl"><span class="swatch" style="background:${col(i)}"></span>${AB[i]}</span>`+
+    (D.subfields[i]||[]).slice(0,8).map(x=>`<span class="chip">${esc(x.name)} <i>${fmt(x.papers)}</i></span>`).join("")+"</div>").join("");
+}
+function renderMarquee(){
+  const P=D.partner_cards||[], tr=document.getElementById("mq-track");
+  if(!P.length){ tr.innerHTML="<p class='muted'>No partner data.</p>"; return; }
+  const card=p=>`<div class="pcard"><div class="top"><span class="mono" style="background:${CLUSTER_COL[p.cluster]||"#627d98"}">${esc(initials(p.name))}</span>
+    <div><b>${esc(p.name)}</b><small>${esc(p.cluster)} · ${fmt(p.cites_in)} citations to the IIITs</small></div></div>
+    <div class="bot"><span class="badge">${fmt(p.total)} joint papers</span>${INST.map(i=>p.by_inst[i]?`<span class="badge g">${AB[i]} ${p.by_inst[i]}</span>`:"").join("")}</div></div>`;
+  const html=P.map(card).join(""); tr.innerHTML=html+html;   // duplicated for a seamless loop
+}
+function renderPubs(){
+  const P=D.publications||[];
+  document.getElementById("publist").innerHTML=P.map(p=>{
+    const doi=p.doi?(p.doi.startsWith("http")?p.doi:"https://doi.org/"+p.doi):"";
+    const au=p.authors.map(a=>a.o?`<b>${esc(a.n)}</b>`:esc(a.n)).join(", ")+(p.more?`, … +${p.more} more`:"");
+    return `<div class="pub"><div><h4>${doi?`<a href="${doi}" target="_blank" rel="noopener">${esc(p.title)} ↗</a>`:esc(p.title)}</h4>
+      <div class="au">${au}</div><div class="ven">${esc(p.venue||(p.type==="conference"?"Conference paper":"–"))}${p.quartile?" ("+esc(p.quartile)+")":""}, ${p.year}</div></div>
+      <div class="side"><span class="badge">${fmt(p.citations)} citations</span>${p.insts.map(i=>`<span class="badge g"><span class="swatch" style="background:${col(i)}"></span>${AB[i]}</span>`).join("")}${p.mega?'<span class="badge g">'+"&gt;50 authors</span>":""}</div></div>`;}).join("")||"<p class='muted'>No papers.</p>";
+}
+function renderHero(){
+  const E=D.explorer, el=document.getElementById("hero-net"); if(!E||!el) return;
+  const W=el.clientWidth||1100, H=el.clientHeight||300;
+  const nodes=E.nodes.map(n=>({id:n.id,i:n.i,dg:n.dg})), links=E.links.map(l=>({source:l.source,target:l.target,x:l.x}));
+  const sim=d3.forceSimulation(nodes).force("link",d3.forceLink(links).id(d=>d.id).distance(22).strength(.3))
+    .force("charge",d3.forceManyBody().strength(-16)).force("x",d3.forceX(W*0.62).strength(.035)).force("y",d3.forceY(H/2).strength(.09)).stop();
+  for(let i=0;i<220;i++) sim.tick();
+  const xs=nodes.map(d=>d.x), ys=nodes.map(d=>d.y), x0=Math.min(...xs), x1=Math.max(...xs), y0=Math.min(...ys), y1=Math.max(...ys);
+  const k=Math.min((W*0.95)/(x1-x0), (H*1.15)/(y1-y0)), ox=W*0.55-k*(x0+x1)/2, oy=H/2-k*(y0+y1)/2;
+  const s=d3.select(el); s.selectAll("*").remove();
+  const g=s.append("g").attr("transform",`translate(${ox},${oy}) scale(${k})`);
+  g.append("g").selectAll("line").data(links.filter(l=>!l.x)).join("line").attr("x1",d=>d.source.x).attr("y1",d=>d.source.y).attr("x2",d=>d.target.x).attr("y2",d=>d.target.y)
+    .attr("stroke","#8aa4c0").attr("stroke-opacity",.16).attr("stroke-width",.6/k*1.4);
+  const xl=links.filter(l=>l.x);
+  g.append("g").selectAll("line").data(xl).join("line").attr("x1",d=>d.source.x).attr("y1",d=>d.source.y).attr("x2",d=>d.target.x).attr("y2",d=>d.target.y)
+    .attr("stroke","#e8457a").attr("stroke-opacity",.35).attr("stroke-width",.9/k*1.4);
+  g.append("g").selectAll("line").data(xl).join("line").attr("class","pl").attr("x1",d=>d.source.x).attr("y1",d=>d.source.y).attr("x2",d=>d.target.x).attr("y2",d=>d.target.y)
+    .attr("stroke","#ffd1dc").attr("stroke-width",2.2/k*1.4).attr("stroke-linecap","round").style("animation-delay",(d,i)=>(-(i*0.37)%3.2)+"s");
+  g.append("g").selectAll("circle").data(nodes).join("circle").attr("cx",d=>d.x).attr("cy",d=>d.y).attr("r",d=>(1.2+Math.sqrt(d.dg)*0.45)/k*1.4)
+    .attr("fill",d=>col(d.i)).attr("fill-opacity",.85);
 }
 function stackedShare(id, tab, cats, onlyInst){
   const insts = onlyInst?[onlyInst]:INST;
@@ -983,6 +1204,7 @@ function renderExplorer(){
   const nb={}; E.links.forEach(l=>{ (nb[l.source]=nb[l.source]||[]).push([l.target,l.w,l.x]); (nb[l.target]=nb[l.target]||[]).push([l.source,l.w,l.x]); });
   const maxDg=Math.max(...E.nodes.map(n=>n.dg),1), r=d3.scaleSqrt().domain([0,maxDg]).range([3,14]);
   let sel=null;
+  const rank={}; INST.forEach(i=>E.nodes.filter(n=>n.i===i).sort((a,b)=>b.dg-a.dg||(a.id<b.id?-1:1)).forEach((n,k)=>rank[n.id]=k));
   function detail(d){
     const el=document.getElementById("ex-detail");
     if(!d){ el.innerHTML="<p class='muted'>Click an author to see their position in the network.</p>"; return; }
@@ -995,10 +1217,13 @@ function renderExplorer(){
   }
   function draw(){
     const q=document.getElementById("ex-q").value.trim().toLowerCase(), brOnly=document.getElementById("ex-br").checked, mode=document.getElementById("ex-col").value;
-    let keep=new Set(E.nodes.filter(n=>on.has(n.i)).map(n=>n.id));
+    const topN=+document.getElementById("ex-top").value;
+    let keep=new Set(E.nodes.filter(n=>on.has(n.i)&&(n.x||n.mv||rank[n.id]<topN)).map(n=>n.id));
     if(brOnly){ const b=new Set(); E.nodes.forEach(n=>{ if(keep.has(n.id)&&(n.x||n.mv)){ b.add(n.id); (nb[n.id]||[]).forEach(([k])=>{ if(keep.has(k)) b.add(k); }); } }); keep=b; }
     const nodes=E.nodes.filter(n=>keep.has(n.id)).map(n=>({...n})), links=E.links.filter(l=>keep.has(l.source)&&keep.has(l.target)).map(l=>({...l}));
     document.getElementById("ex-n").textContent=`${nodes.length} authors · ${links.length} links · ${links.filter(l=>l.x).length} between institutes`;
+    document.getElementById("ns-a").textContent=fmt(nodes.length); document.getElementById("ns-l").textContent=fmt(links.length);
+    document.getElementById("ns-x").textContent=fmt(links.filter(l=>l.x).length); document.getElementById("ns-b").textContent=fmt(nodes.filter(n=>n.x||n.mv).length);
     const hit=q?new Set(nodes.filter(n=>n.n.toLowerCase().includes(q)).map(n=>n.id)):null;
     forceGraph("net-ex",nodes,links,{label:"Co-authorship network explorer",dist:28,
       r:d=>r(d.dg)+(hit&&hit.has(d.id)?3:0), fill:d=>mode==="i"?col(d.i):ccol(d.cm),
@@ -1010,10 +1235,10 @@ function renderExplorer(){
     if(q&&hit&&!hit.size) document.getElementById("ex-detail").innerHTML="<p class='muted'>No author in this view matches “"+esc(q)+"”. Try clearing the filters.</p>";
     document.getElementById("leg-ex").innerHTML=(mode==="i"?INST.map(i=>`<span><span class="swatch" style="background:${col(i)}"></span>${i}</span>`).join(""):
       big.map((c,k)=>`<span><span class="swatch" style="background:${css("--s"+(k+1))}"></span>C${c} (${AB[Object.entries(D.auth.communities[k].institutions).sort((a,b)=>b[1]-a[1])[0][0]]})</span>`).join("")+`<span><span class="swatch" style="background:${css("--other")}"></span>other</span>`)+
-      `<span><span class="swatch" style="background:${css("--s5")}"></span>link between institutes</span><span>dark ring = bridge author · size ∝ degree · drag, scroll to zoom</span>`;
+      `<span><span class="swatch" style="background:${css("--s5")}"></span>link between institutes</span><span>dark ring = bridge author · size ∝ degree</span>`;
   }
   document.getElementById("ex-inst").onchange=e=>{ e.target.checked?on.add(e.target.value):on.delete(e.target.value); draw(); };
-  ["ex-col","ex-br"].forEach(id=>document.getElementById(id).onchange=draw);
+  ["ex-col","ex-br","ex-top"].forEach(id=>document.getElementById(id).onchange=draw);
   let t; document.getElementById("ex-q").oninput=()=>{ clearTimeout(t); t=setTimeout(draw,300); };
   draw();
 }
@@ -1140,6 +1365,8 @@ def build_html(D):
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Group 10 Research Map</title>
 <meta name="description" content="DPCN 2026 Group 10 - research output, citation and co-authorship networks of IIIT Allahabad, ABV-IIITM Gwalior and IIIT Bangalore (2016-2026)">
+<link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Newsreader:ital,opsz,wght@0,6..72,400;0,6..72,500;1,6..72,400&display=swap" rel="stylesheet">
 <style>{CSS}</style>
 </head>
 <body>
