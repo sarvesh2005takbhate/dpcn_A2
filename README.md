@@ -91,10 +91,16 @@ individual people are not included here.
 
 ![Findings and modelling page](docs/images/findings.png)
 
-Dashboard pages: Overview · Findings & modelling · Institution comparison · one
-page per institute (faculty table, h-index, quartiles, top venues, departments,
+Dashboard pages: Overview · Findings & modelling (each finding labelled *Strong
+evidence* or *Suggestive*) · Institution comparison · Publications & research areas
+(research-profile radar, top venues, quartile mix by field, Lorenz curve, active
+topics) · Faculty (all-institute table, compare two faculty, papers-vs-citations) ·
+one page per institute (faculty table, h-index, quartiles, top venues, departments,
 most-cited papers) · Network explorer · Network analysis · Citation network ·
-Indian connectivity · Course connections · Data & methods.
+Indian connectivity · Course connections · Data & methods. Behind *Show advanced
+analysis*: Graph analytics (strongest pairs, recurring teams, local clustering, a
+heuristic cross-institute "synergy" list) and Data audit & rigour (OpenAlex
+completeness per institute, window vs career h-index).
 
 The Overview follows the layout of a research-profile page suggested by the
 instructor ([example](https://jfmendes-sciart.github.io/research.html)), with

@@ -24,9 +24,12 @@ Usage:
 
 import json
 import os
-from collections import Counter
+from collections import Counter, defaultdict
 from datetime import date
+from itertools import combinations
+import math
 
+import networkx as nx
 import pandas as pd
 import requests
 
@@ -130,7 +133,8 @@ def yearly_data(df, adf, nodes, years):
     auth = adf.drop_duplicates(["openalex_id", "author_id"]).groupby("openalex_id")["author_id"].apply(
         lambda s: sorted(idx[a] for a in s)).to_dict()
     papers = [[int(r.year), int(mask[r.openalex_id]), int(r.type == "conference"),
-               int(r.type == "journal" and r.quartile == "Q1"), int(r.citations), auth.get(r.openalex_id, [])]
+               int(r.type == "journal" and r.quartile == "Q1"), int(r.citations), auth.get(r.openalex_id, []),
+               int(r.n_authors)]
               for r in A.unique_papers(df).itertuples()]
     subs = {}
     for inst in C.INST_NAMES:
@@ -140,6 +144,159 @@ def yearly_data(df, adf, nodes, years):
         subs[inst] = {k: [int(v) for v in row] for k, row in t.iterrows()}
     top = {str(y): publication_list(df[df["year"] == y]) for y in years}
     return {"papers": papers, "author_main": main, "subfields": subs, "top_by_year": top}
+
+
+def publications_page(df):
+    """Venue and research-area views for the Publications page."""
+    u = A.unique_papers(df)
+    out = {}
+    # research profile: share of each institute's papers in the ten largest fields (same axes)
+    prof = A.research_areas(df, "field", 10)
+    out["radar"] = {"labels": list(prof.columns), "values": {i: prof.loc[i].tolist() for i in C.INST_NAMES}}
+    # ten most used venues, split by institute
+    v = df[df["journal_name"] != ""]
+    top = v.drop_duplicates("openalex_id")["journal_name"].value_counts().head(10).index
+    out["venues"] = [{"name": n, "type": v[v["journal_name"] == n]["type"].iloc[0],
+                      "by": {i: int(v[(v["journal_name"] == n) & (v["institution"] == i)]["openalex_id"].nunique())
+                             for i in C.INST_NAMES}} for n in top]
+    # quartile mix by research field (journal papers, unique)
+    j = u[(u["type"] == "journal") & (u["field"] != "")]
+    fields = j["field"].value_counts().head(8).index
+    out["qmix"] = [{"field": f, **{q: int((j[j["field"] == f]["quartile"].replace("", "Unranked") == q).sum())
+                                   for q in ["Q1", "Q2", "Q3", "Q4", "Unranked"]}} for f in fields]
+    # most active research topics (OpenAlex subfields)
+    s = u[u["subfield"] != ""]
+    rows = []
+    for name, g in s.groupby("subfield"):
+        jj = g[g["type"] == "journal"]
+        rows.append({"name": name, "field": g["field"].iloc[0], "papers": int(len(g)),
+                     "cpp": round(float(g["citations"].mean()), 1),
+                     "q1": round(float((jj["quartile"] == "Q1").mean() * 100), 1) if len(jj) else None,
+                     "by": {i: int(df[(df["subfield"] == name) & (df["institution"] == i)]["openalex_id"].nunique())
+                            for i in C.INST_NAMES}})
+    out["topics"] = sorted(rows, key=lambda r: -r["papers"])[:15]
+    return out
+
+
+def faculty_records(fac, adf, years, min_papers=3):
+    """One record per (institute, author) with ≥3 papers, for the Faculty page."""
+    a = adf.drop_duplicates(["institution", "author_id", "openalex_id"])
+    yc = a.groupby(["institution", "author_id", "year"]).size()
+    jq = a[a["type"] == "journal"].assign(q=lambda x: x["quartile"].replace("", "Unranked"))
+    qc = jq.groupby(["institution", "author_id", "q"]).size()
+    out = []
+    for r in fac[fac["papers"] >= min_papers].itertuples():
+        k = (r.institution, r.author_id)
+        out.append({"n": r.name, "i": r.institution, "dep": r.department, "core": bool(r.is_core_faculty),
+                    "p": int(r.papers), "j": int(r.journal_papers), "c": int(r.conference_papers), "q1": int(r.q1_papers),
+                    "cit": int(r.citations), "h": int(r.h_index),
+                    "hl": None if pd.isna(r.h_index_lifetime_openalex) else int(r.h_index_lifetime_openalex),
+                    "top": r.top_journal, "fy": int(r.first_year), "ly": int(r.last_year),
+                    "yrs": [int(yc.get(k + (y,), 0)) for y in years],
+                    "q": [int(qc.get(k + (q,), 0)) for q in ["Q1", "Q2", "Q3", "Q4", "Unranked"]]})
+    return sorted(out, key=lambda r: -r["cit"])
+
+
+def graph_analytics(o, df, adf, fac):
+    """Strongest pairs, recurring teams, local clustering and a heuristic
+    'synergy' list of cross-institute faculty pairs who have never co-authored."""
+    nodes = o["auth_metrics"].get("nodes", {})
+    ae = o["auth_edges"]
+    ae = ae[ae["edge_scope"].isin(["same_institution", "inter_group"])]
+    G = nx.Graph()
+    G.add_nodes_from(nodes)
+    for (a, b), g in ae.groupby(["author_a_id", "author_b_id"]):
+        G.add_edge(a, b, weight=int(g["paper_doi"].nunique()))
+    name = lambda n: nodes[n]["name"]
+    inst = lambda n: nodes[n]["institution"]
+    pairs = sorted(G.edges(data="weight"), key=lambda e: (-e[2], name(e[0]), name(e[1])))[:15]
+    out = {"pairs": [{"a": name(x), "ia": inst(x), "b": name(y), "ib": inst(y), "w": w} for x, y, w in pairs]}
+    # recurring teams: three authors of the institutes together on ≥5 papers (papers with ≤12 such authors)
+    tri = Counter()
+    years = defaultdict(list)
+    for wid, g in adf.drop_duplicates(["openalex_id", "author_id"]).groupby("openalex_id"):
+        ids = sorted(g["author_id"])
+        if 3 <= len(ids) <= 12:
+            for t in combinations(ids, 3):
+                tri[t] += 1
+                years[t].append(int(g["year"].iloc[0]))
+    teams = [t for t, c in tri.most_common() if c >= 5]
+    out["teams_total"] = len(teams)
+    out["teams_cross"] = sum(1 for t in teams if len({inst(x) for x in t}) > 1)
+    out["teams"] = [{"m": [{"n": name(x), "i": inst(x)} for x in t], "p": tri[t],
+                     "y": f"{min(years[t])}–{max(years[t])}"} for t in teams[:15]]
+    # local clustering coefficient of authors with ≥2 co-authors, histogram per main institute
+    cl = nx.clustering(G)
+    bins = [round(b / 10, 1) for b in range(11)]
+    out["clust"] = {"bins": [f"{b:.1f}–{b + 0.1:.1f}" for b in bins[:-1]],
+                    "counts": {i: [0] * 10 for i in C.INST_NAMES}}
+    for n, c in cl.items():
+        if G.degree(n) >= 2:
+            out["clust"]["counts"][inst(n)][min(int(c * 10), 9)] += 1
+    # synergy: core faculty at DIFFERENT institutes, never co-authors; cosine of subfield profiles
+    sub = df.drop_duplicates("openalex_id").set_index("openalex_id")["subfield"]
+    core = fac[fac["is_core_faculty"]]
+    prof = {}
+    for r in core.itertuples():
+        papers = adf[(adf["author_id"] == r.author_id) & (adf["institution"] == r.institution)]["openalex_id"].unique()
+        prof[(r.institution, r.author_id)] = (r.name, r.department, Counter(sub.get(p, "") for p in papers if sub.get(p, "")))
+    def cos(x, y):
+        dot = sum(x[k] * y.get(k, 0) for k in x)
+        nx_, ny_ = math.sqrt(sum(v * v for v in x.values())), math.sqrt(sum(v * v for v in y.values()))
+        return dot / (nx_ * ny_) if nx_ and ny_ else 0.0
+    sy = []
+    keys = sorted(prof)
+    for (ia, a), (ib, b) in combinations(keys, 2):
+        if ia == ib or a == b or G.has_edge(a, b):
+            continue
+        s_ = cos(prof[(ia, a)][2], prof[(ib, b)][2])
+        if s_ < 0.3:
+            continue
+        common = len(set(G[a]) & set(G[b])) if a in G and b in G else 0
+        shared = [k for k, _ in (prof[(ia, a)][2] & prof[(ib, b)][2]).most_common(3)]
+        sy.append({"a": prof[(ia, a)][0], "ia": ia, "da": prof[(ia, a)][1], "b": prof[(ib, b)][0], "ib": ib,
+                   "db": prof[(ib, b)][1], "sim": round(s_, 3), "cn": common,
+                   "score": round(s_ * (1 + 0.5 * min(common, 3)), 3), "shared": shared})
+    out["synergy"] = sorted(sy, key=lambda r: (-r["score"], r["a"], r["b"]))[:150]
+    out["synergy_core"] = len(keys)
+    return out
+
+
+def data_audit(df, adf, fac):
+    """How complete is the OpenAlex record behind each statistic?"""
+    groups = [(i, df[df["institution"] == i]) for i in C.INST_NAMES] + [("All", A.unique_papers(df))]
+    def pct(mask):
+        return round(float(mask.mean()) * 100, 1) if len(mask) else None
+    rows = [("DOI available", lambda s: pct(s["doi"] != ""), "links papers to publishers; used to deduplicate"),
+            ("Venue name in OpenAlex", lambda s: pct(s["journal_name"] != ""), "needed for quartiles, CORE ranks and top venues"),
+            ("SJR quartile found (journal papers)", lambda s: pct(s[s["type"] == "journal"]["sjr_quartile"] != ""),
+             "unranked = journal not indexed by Scimago that year"),
+            ("CORE rank found (conference papers)", lambda s: pct(s[s["type"] == "conference"]["core_rank"] != ""),
+             "CORE lists only A*–C conferences, so low coverage is expected"),
+            ("Research field assigned", lambda s: pct(s["field"] != ""), "OpenAlex primary topic → field"),
+            ("Reference list available", lambda s: pct(s["n_references"].astype(int) > 0), "needed for the citation network"),
+            ("Paper from 2016–2025 (complete years)", lambda s: pct(~s["partial_year"]), "2026 is still being indexed")]
+    out = []
+    for label, f, note in rows:
+        vals = {name: f(s) for name, s in groups}
+        a = vals["All"]
+        status = "n/a" if label.startswith("CORE") or label.startswith("Paper from") else \
+            ("Good" if a >= 95 else "Fair" if a >= 80 else "Weak")
+        out.append({"label": label, "vals": vals, "status": status, "note": note})
+    aa = adf.drop_duplicates(["openalex_id", "raw_author_id"])
+    idp = {i: round(float((~aa[aa["institution"] == i]["raw_author_id"].str.startswith("noid:")).mean()) * 100, 1)
+           for i in C.INST_NAMES}
+    idp["All"] = round(float((~aa["raw_author_id"].str.startswith("noid:")).mean()) * 100, 1)
+    out.append({"label": "Authorships with an OpenAlex author ID", "vals": idp,
+                "status": "Good" if idp["All"] >= 95 else "Fair" if idp["All"] >= 80 else "Weak",
+                "note": "the rest are matched only with co-author evidence (DECISIONS.md)"})
+    dep = {i: round(float((fac[fac["institution"] == i]["department_source"] == "affiliation").mean()) * 100, 1)
+           for i in C.INST_NAMES}
+    dep["All"] = round(float((fac["department_source"] == "affiliation").mean()) * 100, 1)
+    out.append({"label": "Department stated in affiliation text (authors)", "vals": dep,
+                "status": "Good" if dep["All"] >= 95 else "Fair" if dep["All"] >= 80 else "Weak",
+                "note": "otherwise inferred from the author's main research field"})
+    return out
 
 
 def explorer_graph(o, nd):
@@ -269,6 +426,10 @@ def build_data(o):
     D["partner_cards"] = partner_cards(o["indian"])
     D["publications"] = publication_list(df)
     D["yearly"] = yearly_data(df, adf, o["auth_metrics"].get("nodes", {}), years)
+    D["pubs_page"] = publications_page(df)
+    D["facx"] = faculty_records(fac, adf, years)
+    D["graphx"] = graph_analytics(o, df, adf, fac)
+    D["audit"] = data_audit(df, adf, fac)
     S = o["structure"]
     D["structure"] = S
     if nodes and S:
@@ -360,6 +521,16 @@ h2.secttl{font-size:22px;margin:26px 0 4px}
 .yearbar{display:flex;flex-wrap:wrap;align-items:center;gap:8px 10px;margin:14px 0 2px;padding:10px 12px;background:var(--surface);border:1px solid var(--border);border-radius:10px;font-size:12.5px}
 .yearbar .ylab{font-weight:600;color:var(--text-2);letter-spacing:.06em;text-transform:uppercase;font-size:11px}
 .yearbar .ynote{font-size:11.5px;flex-basis:100%}
+.advbtn{margin:10px 8px 0;width:calc(100% - 16px);padding:7px 10px;border:1px dashed var(--border);border-radius:8px;background:none;color:var(--text-2);font:inherit;font-size:12.5px;cursor:pointer;text-align:left}
+.advbtn:hover{background:var(--surface-2)}
+.infer{margin-top:10px;padding:8px 10px;border-left:3px solid var(--teal,#2a9d8f);background:var(--surface-2);border-radius:6px;font-size:12px;color:var(--text-2)}
+table.sbs td .bar{height:5px;border-radius:3px;margin-top:3px;opacity:.85}
+.cmp2{display:grid;grid-template-columns:1fr 1.1fr 1fr;gap:14px;align-items:start}
+@media(max-width:860px){.cmp2{grid-template-columns:minmax(0,1fr)}}
+td.win{color:var(--teal,#2a9d8f);font-weight:600}
+.conf{display:inline-block;margin-left:6px;padding:1px 7px;border-radius:99px;font-size:10.5px;font-weight:600;vertical-align:2px}
+.conf.strong{background:#dff3ec;color:#0a6b4f}.conf.sugg{background:#fff3d6;color:#8a5a00}
+.st-Good{color:#0a7a55;font-weight:600}.st-Fair{color:#a36b00;font-weight:600}.st-Weak{color:#b3261e;font-weight:600}
 /* interest chips */
 .chiprow{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-bottom:10px}
 .chiprow .lbl{width:64px;font-size:12px;font-weight:600;color:var(--text-2)}
@@ -462,12 +633,20 @@ BODY = r"""
   <button class="nav" data-p="findings"><span class="dot" style="background:var(--s5)"></span>Findings &amp; modelling</button>
   <div class="navh">Three institutes</div>
   <button class="nav" data-p="compare"><span class="dot" style="background:var(--s7)"></span>Institution comparison</button>
+  <button class="nav" data-p="pubs"><span class="dot" style="background:var(--t2)"></span>Publications &amp; research areas</button>
+  <button class="nav" data-p="faculty"><span class="dot" style="background:var(--s4)"></span>Faculty</button>
   %INSTNAV%
   <div class="navh">Networks</div>
   <button class="nav" data-p="explorer"><span class="dot" style="background:var(--t2)"></span>Network explorer</button>
   <button class="nav" data-p="authorship"><span class="dot" style="background:var(--t3)"></span>Network analysis</button>
   <button class="nav" data-p="citation"><span class="dot" style="background:var(--t1)"></span>Citation network</button>
   <button class="nav" data-p="india"><span class="dot" style="background:var(--s4)"></span>Indian connectivity</button>
+  <button class="advbtn" id="advbtn" aria-expanded="false">Show advanced analysis ▾</button>
+  <div class="advgroup" id="advgroup" hidden>
+    <div class="navh">Advanced</div>
+    <button class="nav" data-p="graphx"><span class="dot" style="background:var(--s5)"></span>Graph analytics</button>
+    <button class="nav" data-p="audit"><span class="dot" style="background:var(--s2)"></span>Data audit &amp; rigour</button>
+  </div>
   <div class="navh">About</div>
   <button class="nav" data-p="course"><span class="dot" style="background:var(--s6)"></span>Course connections</button>
   <button class="nav" data-p="method"><span class="dot" style="background:var(--other)"></span>Data &amp; methods</button>
@@ -498,7 +677,8 @@ BODY = r"""
       <span class="ylab">Years</span>
       <select id="y-from" aria-label="From year"></select><span class="muted">to</span><select id="y-to" aria-label="To year"></select>
       <span class="seg" id="y-presets"></span>
-      <span class="muted ynote">Applies to this band, the institute cards, research interests and selected publications · click a lollipop to pick one year</span>
+      <span class="ylab" style="margin-left:6px">Team size</span><span class="seg" id="t-size"></span>
+      <span class="muted ynote">Applies to this band, the side-by-side table, research interests and selected publications · click a lollipop to pick one year · team size = all authors on the paper</span>
     </div>
     <div class="kpis" id="ov-kpis"></div>
     <div class="lolli-head"><span class="muted">Citations received per year</span><span class="seg" id="lolli-sel"></span></div>
@@ -512,7 +692,7 @@ BODY = r"""
   <div class="mq-head"><h2 class="serif secttl" style="margin:0">Key collaborating institutions</h2><span class="muted">Hover to pause · scrolling continuously</span></div>
   <div class="marquee" id="marquee" aria-label="Indian partner institutions with the most co-authored papers"><div class="mq-track" id="mq-track"></div></div>
   <div class="warn">2026 is a partial year (data collected during 2026); recent papers have had little time to be cited.</div>
-  <div class="grid g3" id="ov-tiles"></div>
+  <div class="card" style="margin-bottom:16px"><h3>The three institutes side by side</h3><div class="note" id="sbs-note">Bars compare institutes within a column; follows the year and team-size filters</div><div class="tw"><table class="sbs" id="ov-tiles"></table></div></div>
   <div class="grid g2">
     <div class="card"><h3>Publication trend</h3><div class="note">Papers per year; dotted segment = partial 2026</div><div class="cw"><canvas id="c-trend"></canvas></div></div>
     <div class="card"><h3>Median citations by publication year</h3><div class="note">Citation counts depend strongly on paper age</div><div class="cw"><canvas id="c-age"></canvas></div></div>
@@ -584,6 +764,64 @@ BODY = r"""
     <div class="legend" id="leg-ex"></div>
     <p class="hint">Drag nodes · scroll to zoom · hover for name and numbers · click for co-authors. Bridge authors are always shown.</p>
   </div>
+</section>
+<section class="page" id="p-pubs">
+  <h1>Publications &amp; research areas</h1>
+  <div class="sub">Where the three institutes publish, how good the venues are, and what they work on</div>
+  <div class="grid g2">
+    <div class="card"><h3>Research profile of each institute</h3><div class="note">Share of each institute's papers in the ten largest OpenAlex fields (all three on the same axes; square-root radial scale so small fields stay visible — hover for the real %)</div><div class="cw" style="height:440px"><canvas id="c-radar"></canvas></div>
+      <div class="infer"><b>Reading:</b> a point further out = a larger share of that institute's papers. Overlapping shapes = similar research profiles; IIITB leans further towards Computer Science.</div></div>
+    <div class="card"><h3>The ten most used venues</h3><div class="note">Journals and conference series together, papers per institute</div><div class="cw tall"><canvas id="c-venues"></canvas></div>
+      <div class="infer"><b>Reading:</b> proceedings series (LNCS, CCIS, LNNS) dominate; long bars of one colour show venues used mainly by one institute.</div></div>
+  </div>
+  <div class="grid g2">
+    <div class="card"><h3>Is quality improving? Q1 share by year</h3><div class="note">Share of each institute's journal papers in Q1 journals (SJR, year-matched)</div><div class="cw"><canvas id="c-q1y2"></canvas></div>
+      <div class="infer"><b>Reading:</b> a rising line = moving into better journals. IIITA and ABV rose clearly from 2016–19 to 2022–25 (χ² p &lt; 0.001).</div></div>
+    <div class="card"><h3>Journals vs conferences, by year</h3><div class="note">Conference papers as % of each institute's output</div><div class="cw"><canvas id="c-jc"></canvas></div>
+      <div class="infer"><b>Reading:</b> IIITB publishes mostly in conferences (typical for computer science), IIITA and ABV mostly in journals.</div></div>
+  </div>
+  <div class="grid g2">
+    <div class="card"><h3>Quartile mix by research field</h3><div class="note">Journal papers of the three institutes in the eight largest fields</div><div class="cw tall"><canvas id="c-qmix"></canvas></div></div>
+    <div class="card"><h3>How concentrated are the citations? (Lorenz curve)</h3><div class="note">Papers ranked from most to least cited; the further the curve bows above the diagonal, the more a few papers carry the total</div><div class="cw tall"><canvas id="c-lorenz"></canvas></div></div>
+  </div>
+  <div class="card"><h3>Most active research topics</h3><div class="note">OpenAlex subfields, unique papers of all three institutes; citations per paper are raw (older topics accumulate more)</div><div class="tw"><table id="t-topics"></table></div></div>
+</section>
+<section class="page" id="p-faculty">
+  <h1>Faculty</h1>
+  <div class="sub">Who publishes how much, across all three institutes (authors with ≥3 papers at the institute)</div>
+  <div class="grid g4" id="fx-tiles"></div>
+  <div class="card" style="margin-bottom:16px"><h3>Faculty performance</h3>
+    <div class="controls"><input type="search" id="fx-q" placeholder="Search name, department or venue"><span id="fx-inst"></span><label><input type="checkbox" id="fx-core" checked> core faculty only</label><span id="fx-n" class="muted"></span></div>
+    <div class="note">Click a column to sort. h-index = from 2016–2026 papers at the institute; career h = OpenAlex lifetime h-index.</div>
+    <div class="tw"><table id="t-fx"></table></div></div>
+  <div class="card" style="margin-bottom:16px"><h3>Compare two faculty</h3>
+    <div class="controls"><select id="fx-a" aria-label="First faculty member"></select><span class="muted">vs</span><select id="fx-b" aria-label="Second faculty member"></select></div>
+    <div class="cmp2"><div class="cw"><canvas id="c-fxa"></canvas></div><div class="tw"><table id="t-fx2"></table></div><div class="cw"><canvas id="c-fxb"></canvas></div></div>
+    <div class="infer"><b>Reading:</b> the better value on each row is highlighted; bars show papers per year, the table also gives the journal-quartile mix.</div></div>
+  <div class="card"><h3>Every faculty member: papers vs citations</h3><div class="note">Core faculty; bubble size = h-index; hover for the name</div><div class="cw tall"><canvas id="c-fxs"></canvas></div>
+    <div class="infer"><b>Reading:</b> further right = more papers, higher = more citations. Bubbles far above the crowd have a few very highly cited papers.</div></div>
+</section>
+<section class="page" id="p-graphx">
+  <h1>Graph analytics</h1>
+  <div class="sub">Advanced: strong ties, recurring teams, local clustering, and where new cross-institute ties could form</div>
+  <div class="grid g2">
+    <div class="card"><h3>Strongest pairs (most shared papers)</h3><div class="tw"><table id="t-gpairs"></table></div></div>
+    <div class="card"><h3>Recurring teams</h3><div class="note" id="teams-note"></div><div class="tw"><table id="t-teams"></table></div></div>
+  </div>
+  <div class="card" style="margin-bottom:16px"><h3>Local clustering coefficient</h3><div class="note">Share of an author's co-author pairs who also co-authored with each other (authors with ≥2 co-authors), by main institute</div><div class="cw"><canvas id="c-clust"></canvas></div>
+    <div class="infer"><b>Reading:</b> the peak at 0.9–1.0 comes from authors whose co-authors all sat on the same papers (each paper is a clique); low values are hubs whose co-authors don't know each other — typically faculty with many students.</div></div>
+  <div class="card"><h3>Research synergy matchmaker <span class="pill">heuristic</span></h3>
+    <div class="note" id="syn-note"></div>
+    <div class="controls"><label>Min. topic similarity <input type="range" id="syn-min" min="0.3" max="0.95" step="0.05" value="0.6"></label><span id="syn-v"></span>
+      <label>Pair <select id="syn-pair"><option value="">any two institutes</option></select></label><span id="syn-n" class="muted"></span></div>
+    <div class="tw"><table id="t-syn"></table></div></div>
+</section>
+<section class="page" id="p-audit">
+  <h1>Data audit &amp; rigour</h1>
+  <div class="sub">Advanced: can the numbers be trusted? How complete the OpenAlex record is, and how the dataset's h-index relates to career h-index</div>
+  <div class="card" style="margin-bottom:16px"><h3>How complete is the OpenAlex record?</h3><div class="note">Share of each institute's papers (or authors) with the item available. Good ≥ 95%, Fair 80–95%, Weak &lt; 80%.</div><div class="tw"><table id="t-audit"></table></div></div>
+  <div class="card" style="margin-bottom:16px"><h3>Window h-index vs career h-index</h3><div class="note">Core faculty. Window = this dataset's 2016–2026 papers at the institute; career = OpenAlex lifetime h-index. Points far below the diagonal carry citations from before 2016 or from other affiliations.</div><div class="cw tall"><canvas id="c-hh"></canvas></div><p class="note" id="hh-note"></p></div>
+  <div class="card"><h3>Citation integrity checks already in the analysis</h3><ul class="defs" id="rig-list"></ul></div>
 </section>
 <section class="page" id="p-course">
   <h1>Course connections</h1>
@@ -787,12 +1025,13 @@ const initials = n => n.replace(/\(.*?\)/g,"").split(/[\s,&-]+/).filter(w=>w.len
 const CLUSTER_COL = {"IIT":"#2a78d6","NIT":"#eb6834","IIIT":"#1baf7a","IISER/IISc/NISER":"#6250d6","Central University":"#eda100",
   "State/Private University":"#8a6f3a","Industry":"#e87ba4","Medical":"#b3261e","CSIR":"#008300","Govt/Other Research":"#52514e"};
 // ── Year filter (Overview) ─────────────────────────────
-let YR=[YEARS[0],YEARS[YEARS.length-1]], LOLLI="All";
+let YR=[YEARS[0],YEARS[YEARS.length-1]], LOLLI="All", TS="all";
+const tsOk=p=>TS==="all"||(TS==="small"?p[6]<=10:p[6]>10);
 const isAll=()=>YR[0]===YEARS[0]&&YR[1]===YEARS[YEARS.length-1];
 const hidx=c=>{ const s=c.slice().sort((a,b)=>b-a); let h=0; while(h<s.length&&s[h]>=h+1) h++; return h; };
 const median=c=>{ if(!c.length) return 0; const s=c.slice().sort((a,b)=>a-b), m=s.length>>1; return s.length%2?s[m]:(s[m-1]+s[m])/2; };
 function yearStats(bit){
-  const Y=D.yearly, P=Y.papers.filter(p=>p[0]>=YR[0]&&p[0]<=YR[1]&&(!bit||(p[1]&bit)));
+  const Y=D.yearly, P=Y.papers.filter(p=>p[0]>=YR[0]&&p[0]<=YR[1]&&(!bit||(p[1]&bit))&&tsOk(p));
   const cites=P.map(p=>p[4]), j=P.filter(p=>!p[2]), authors=new Set(), links=new Set(); let inter=0, copub=0;
   P.forEach(p=>{ const a=p[5]; a.forEach(x=>authors.add(x)); if((p[1]&(p[1]-1))!==0) copub++;
     for(let i=0;i<a.length;i++) for(let k=i+1;k<a.length;k++){ const key=a[i]*8192+a[k];
@@ -808,9 +1047,11 @@ function setupYears(){
   const pre=document.getElementById("y-presets");
   pre.innerHTML=presets.map(([l,a,b])=>`<button data-a="${a}" data-b="${b}">${l}</button>`).join("");
   pre.onclick=e=>{ if(e.target.dataset.a) setYears(+e.target.dataset.a,+e.target.dataset.b); };
+  const ts=document.getElementById("t-size");
+  ts.innerHTML=[["all","All papers"],["small","≤ 10 authors"],["large","> 10 authors"]].map(([k,l])=>`<button data-t="${k}" class="${k===TS?"on":""}">${l}</button>`).join("");
+  ts.onclick=e=>{ const k=e.target.dataset.t; if(!k) return; TS=k; ts.querySelectorAll("button").forEach(b=>b.classList.toggle("on",b.dataset.t===k)); setYears(YR[0],YR[1]); };
   f.onchange=()=>setYears(+f.value,Math.max(+f.value,+t.value)); t.onchange=()=>setYears(Math.min(+f.value,+t.value),+t.value);
   document.getElementById("stat-upd").textContent="(collected "+D.meta.generated.slice(0,7)+"; 2026 is a partial year)";
-  document.getElementById("foot-upd").textContent="last updated "+D.meta.generated;
   const q=(new URLSearchParams(location.search).get("years")||"").match(/^(\d{4})(?:-(\d{4}))?$/);
   if(q){ const a=+q[1], b=+(q[2]||q[1]); if(YEARS.includes(a)&&YEARS.includes(b)&&a<=b) YR=[a,b]; }
   setYears(YR[0],YR[1]);
@@ -823,7 +1064,7 @@ function setYears(a,b){
 const yrLabel=()=>YR[0]===YR[1]?String(YR[0]):`${YR[0]}–${YR[1]}`;
 function renderKpis(){
   if(!D.yearly){ document.getElementById("ov-kpis").innerHTML="<p class='muted'>Yearly data unavailable.</p>"; return; }
-  const s=yearStats(0), mx=ST.mixing||{}, all=isAll();
+  const s=yearStats(0), mx=ST.mixing||{}, all=isAll()&&TS==="all";
   const k=[[fmt(s.n),"publications",`${fmt(s.j)} journal · ${fmt(s.c)} conference`],
     [fmt(s.sum),"citations",`median ${s.med} per paper`],[s.h,"h-index",`papers of ${yrLabel()}`],
     [s.j?(100*s.q1/s.j).toFixed(1)+"%":"–","Q1 journal share",`${fmt(s.q1)} Q1 papers`],
@@ -835,12 +1076,15 @@ function renderKpis(){
 }
 function renderInstCards(){
   const S=Object.fromEntries(D.summary.map(s=>[s.institution,s]));
-  document.getElementById("ov-tiles").innerHTML=INST.map((i,k)=>{
-    const s=yearStats(1<<k);
-    return `<div class="card tile"><div class="lab"><span class="swatch" style="background:${col(i)}"></span>${i} · ${yrLabel()}</div>
-      <div class="val">${fmt(s.n)} papers</div>
-      <div class="foot">${fmt(s.j)} journal · ${fmt(s.c)} conference · ${s.j?(100*s.q1/s.j).toFixed(1):"–"}% of journal papers in Q1</div>
-      <div class="foot">${fmt(s.sum)} citations (median ${s.med}) · h-index ${s.h} · ${fmt(s.authors)} active authors · ${S[i].core_faculty} core faculty (all years)</div></div>`;}).join("");
+  const st=INST.map((i,k)=>({i,s:yearStats(1<<k)}));
+  const cols=[["Papers",x=>x.s.n,fmt],["Journal / conf.",x=>x.s.j,(v,x)=>`${fmt(x.s.j)} / ${fmt(x.s.c)}`],["Active authors",x=>x.s.authors,fmt],
+    ["Citations",x=>x.s.sum,fmt],["Per paper",x=>x.s.n?x.s.sum/x.s.n:0,v=>v.toFixed(1)],["Median",x=>x.s.med,v=>v],
+    ["Q1 share",x=>x.s.j?100*x.s.q1/x.s.j:0,v=>v.toFixed(1)+"%"],["h-index",x=>x.s.h,v=>v],["Core faculty*",x=>S[x.i].core_faculty,v=>v]];
+  const mx=cols.map(([,f])=>Math.max(...st.map(f),1e-9));
+  document.getElementById("ov-tiles").innerHTML="<thead><tr><th>Institute · "+yrLabel()+(TS!=="all"?(TS==="small"?" · ≤10 authors":" · >10 authors"):"")+"</th>"+cols.map(c=>`<th class="num">${c[0]}</th>`).join("")+"</tr></thead><tbody>"+
+    st.map(x=>`<tr><td><span class="swatch" style="background:${col(x.i)}"></span>${x.i}</td>`+cols.map(([,f,fm],k)=>{const v=f(x);
+      return `<td class="num">${fm(v,x)}<div class="bar" style="width:${Math.max(4,100*v/mx[k])}%;background:${col(x.i)}"></div></td>`;}).join("")+"</tr>").join("")+"</tbody>";
+  document.getElementById("sbs-note").textContent="Bars compare institutes within a column; follows the year and team-size filters · *core faculty is defined over all years";
 }
 function renderLolli(which){
   LOLLI=which; const inR=yr=>yr>=YR[0]&&yr<=YR[1];
@@ -1153,11 +1397,12 @@ function renderIndia(){
 function renderFindings(){
   const I=D.insights||{}; if(!I.findings){ document.getElementById("find-cards").innerHTML="<p>Run part5_insights.py.</p>"; return; }
   document.getElementById("sfind-cards").innerHTML=(ST.findings||[]).map((f,k)=>
-    `<div class="card finding sfind"><h3><span class="num">${k+1}</span>${esc(f.title)}</h3><dl>
+    `<div class="card finding sfind"><h3><span class="num">${k+1}</span>${esc(f.title)}${confBadge(f.title)}</h3><dl>
       <dt>Observation</dt><dd>${esc(f.observation)}</dd><dt>Evidence</dt><dd>${esc(f.evidence)}</dd>
       <dt>Meaning</dt><dd>${esc(f.meaning)}</dd><dt>Caveats</dt><dd>${esc(f.caveat)}</dd></dl></div>`).join("")||"<p class='muted'>Run part5b_network_structure.py.</p>";
   document.getElementById("find-cards").innerHTML=I.findings.map((f,k)=>
-    `<div class="card finding"><h3><span class="num">${k+1}</span>${esc(f.title)}</h3><p>${esc(f.text)}</p></div>`).join("");
+    `<div class="card finding"><h3><span class="num">${k+1}</span>${esc(f.title)}${confBadge(f.title)}</h3><p>${esc(f.text)}</p></div>`).join("")+
+    `<p class="note" style="grid-column:1/-1"><span class="conf strong">Strong evidence</span> direct measurement or a test against a null model / control. <span class="conf sugg">Suggestive</span> a correlation or an inference that other explanations could also fit.</p>`;
   table("t-methods",[{h:"Method",v:r=>r[0],f:r=>`<b>${esc(r[0])}</b>`},{h:"Status",v:r=>r[1],f:r=>`<span class="pill${r[1]==="implemented"?" used":""}">${r[1]}</span>`},
     {h:"Why it fits",v:r=>r[2]},{h:"Result",v:r=>r[3]},{h:"Cannot conclude",v:r=>r[4]}],METHODS());
   document.getElementById("limits").innerHTML=LIMITS.map(x=>"<li>"+x+"</li>").join("");
@@ -1205,6 +1450,10 @@ function renderNetTests(){
     ["Community ↔ department / institute (NMI)",`${an.nmi_community_department} / ${an.nmi_community_institution}`,"0 = unrelated","communities follow departments and institutes"],
     ["Median co-authors: core faculty vs others",`${an.core_median_degree} vs ${an.other_median_degree}`,"Mann–Whitney p<0.001","faculty are the hubs"]].map(x=>x));
 }
+
+// ── Confidence labels for findings ─────────────────────
+const SUGGESTIVE=["The IIITA–ABV link","The IIITs are connected indirectly","The 'international premium'","Citations follow collaboration"];
+const confBadge=t=>SUGGESTIVE.some(x=>t.startsWith(x))?'<span class="conf sugg">Suggestive</span>':'<span class="conf strong">Strong evidence</span>';
 
 // ── Methods & limitations (shared text) ───────────────
 function METHODS(){
@@ -1395,6 +1644,133 @@ function renderMethod(){
   document.getElementById("defs").innerHTML=items.map(x=>"<li>"+x+"</li>").join("");
 }
 
+// ── Advanced pages toggle ──────────────────────────────
+function setAdv(on){
+  const g=document.getElementById("advgroup"), b=document.getElementById("advbtn");
+  g.hidden=!on; b.setAttribute("aria-expanded",on); b.textContent=on?"Hide advanced analysis ▴":"Show advanced analysis ▾";
+  try{ localStorage.setItem("g10-adv",on?"1":"0"); }catch(e){}
+}
+document.getElementById("advbtn").onclick=()=>setAdv(document.getElementById("advgroup").hidden);
+try{ if(localStorage.getItem("g10-adv")==="1") setAdv(true); }catch(e){}
+
+// ── Publications & research areas ──────────────────────
+function renderPubsPage(){
+  const P=D.pubs_page; if(!P) return;
+  const t2=css("--text-2");
+  chart("c-radar",{type:"radar",data:{labels:P.radar.labels,datasets:INST.map(i=>({label:i,data:P.radar.values[i].map(v=>Math.sqrt(v)),real:P.radar.values[i],
+      borderColor:col(i),backgroundColor:col(i)+"22",pointBackgroundColor:col(i),borderWidth:2,pointRadius:2}))},
+    options:{responsive:true,maintainAspectRatio:false,animation:false,plugins:{legend:{labels:{color:t2,boxWidth:12,usePointStyle:true}},
+      tooltip:{callbacks:{label:c=>`${c.dataset.label}: ${c.dataset.real[c.dataIndex]}% of papers`}}},
+      scales:{r:{angleLines:{color:css("--grid")},grid:{color:css("--grid")},pointLabels:{color:t2,font:{size:10.5}},ticks:{display:false},beginAtZero:true}}}});
+  chart("c-venues",{type:"bar",data:{labels:P.venues.map(v=>v.name.length>38?v.name.slice(0,37)+"…":v.name),datasets:INST.map(i=>({label:i,data:P.venues.map(v=>v.by[i]),backgroundColor:col(i)}))},
+    options:baseOpts({indexAxis:"y",scales:{x:{stacked:true,title:{display:true,text:"papers",color:t2}},y:{stacked:true}},
+      plugins:{tooltip:{callbacks:{title:c=>P.venues[c[0].dataIndex].name+" ("+P.venues[c[0].dataIndex].type+")"}}}})});
+  const I=D.insights||{}, yrs=YEARS.filter(y=>y<=2025);
+  if(I.growth_quality) chart("c-q1y2",{type:"line",data:{labels:yrs,datasets:INST.map(i=>({label:i,data:yrs.map(y=>I.growth_quality[i].q1_by_year[y]??null),
+    borderColor:col(i),backgroundColor:col(i),borderWidth:2,pointRadius:3}))},options:baseOpts({scales:{y:{max:80,title:{display:true,text:"% Q1",color:t2}}}})});
+  chart("c-jc",{type:"line",data:{labels:YEARS,datasets:INST.map(i=>({label:i,data:YEARS.map((y,k)=>{const j=D.trend[i].journal[k],c=D.trend[i].conference[k];return j+c?+(100*c/(j+c)).toFixed(1):null;}),
+    borderColor:col(i),backgroundColor:col(i),borderWidth:2,pointRadius:3}))},options:baseOpts({scales:{y:{max:100,title:{display:true,text:"% conference papers",color:t2}}}})});
+  const Q=["Q1","Q2","Q3","Q4","Unranked"];
+  chart("c-qmix",{type:"bar",data:{labels:P.qmix.map(r=>r.field),datasets:Q.map((q,k)=>({label:q,data:P.qmix.map(r=>{const t=Q.reduce((a,x)=>a+r[x],0)||1;return +(100*r[q]/t).toFixed(1);}),
+      counts:P.qmix.map(r=>r[q]),backgroundColor:css(TIER[k])}))},
+    options:baseOpts({indexAxis:"y",scales:{x:{stacked:true,max:100,title:{display:true,text:"% of journal papers",color:t2}},y:{stacked:true}},
+      plugins:{tooltip:{callbacks:{label:c=>`${c.dataset.label}: ${c.raw}% (${c.dataset.counts[c.dataIndex]} papers)`}}}})});
+  const lor=bit=>{ const c=D.yearly.papers.filter(p=>p[1]&bit).map(p=>p[4]).sort((a,b)=>b-a), tot=c.reduce((a,b)=>a+b,0)||1, n=c.length;
+    const pts=[{x:0,y:0}]; let cum=0; c.forEach((v,k)=>{ cum+=v; if(k%Math.max(1,Math.floor(n/60))===0||k===n-1) pts.push({x:+(100*(k+1)/n).toFixed(1),y:+(100*cum/tot).toFixed(1)}); }); return pts; };
+  chart("c-lorenz",{type:"scatter",data:{datasets:[...INST.map((i,k)=>({label:`${i} (Gini ${((I.concentration||{})[i]||{}).gini_citations??"–"})`,data:lor(1<<k),showLine:true,pointRadius:0,borderColor:col(i),borderWidth:2})),
+      {label:"if every paper were cited equally",data:[{x:0,y:0},{x:100,y:100}],showLine:true,pointRadius:0,borderColor:css("--muted"),borderDash:[5,4],borderWidth:1}]},
+    options:baseOpts({scales:{x:{type:"linear",max:100,title:{display:true,text:"% of papers (most cited first)",color:t2}},y:{max:100,title:{display:true,text:"% of citations",color:t2}}},
+      plugins:{tooltip:{callbacks:{label:c=>`${c.dataset.label.split(" (")[0]}: top ${c.raw.x}% of papers hold ${c.raw.y}% of citations`}}}})});
+  table("t-topics",[{h:"Topic (subfield)",v:r=>r.name,f:r=>`<b>${esc(r.name)}</b><br><span class="muted">${esc(r.field)}</span>`},{h:"Papers",v:r=>r.papers,num:true},
+    ...INST.map(i=>({h:AB[i],v:r=>r.by[i],num:true})),{h:"Citations / paper",v:r=>r.cpp,num:true},{h:"Q1 share (journals)",v:r=>r.q1??-1,num:true,f:r=>r.q1==null?"–":r.q1+"%"}],P.topics,{sort:1});
+}
+
+// ── Faculty ────────────────────────────────────────────
+function renderFaculty(){
+  const F=D.facx||[]; if(!F.length) return;
+  const core=F.filter(r=>r.core), top=core.slice().sort((a,b)=>b.p-a.p)[0], toph=core.slice().sort((a,b)=>b.h-a.h)[0];
+  document.getElementById("fx-tiles").innerHTML=[
+    tile("Core faculty (per institute)",fmt(core.length),INST.map(i=>AB[i]+" "+core.filter(r=>r.i===i).length).join(" · ")+(core.length!==(D.summary.find(s=>s.institution.startsWith("All"))||{}).core_faculty?` · ${(D.summary.find(s=>s.institution.startsWith("All"))||{}).core_faculty} people (one counted at two institutes)`:"")),
+    tile("Most prolific (core)",fmt(top.p)+" papers",esc(top.n)+" · "+AB[top.i]),
+    tile("Highest h-index (window)",toph.h,esc(toph.n)+" · "+AB[toph.i]),
+    tile("Median core-faculty output",median(core.map(r=>r.p))+" papers",`median h-index ${median(core.map(r=>r.h))}`)].join("");
+  const on=new Set(INST);
+  document.getElementById("fx-inst").innerHTML=INST.map(i=>`<label><input type="checkbox" value="${i}" checked> <span class="swatch" style="background:${col(i)}"></span>${AB[i]}</label>`).join(" ");
+  const cols=[{h:"Name",v:r=>r.n,f:r=>`<span class="swatch" style="background:${col(r.i)}"></span>${esc(r.n)}`},{h:"Institute",v:r=>AB[r.i]},{h:"Department",v:r=>r.dep},
+    {h:"Papers",v:r=>r.p,num:true},{h:"Citations",v:r=>r.cit,num:true,f:r=>fmt(r.cit)},{h:"h-index",v:r=>r.h,num:true},{h:"Career h",v:r=>r.hl??-1,num:true,f:r=>r.hl??"–"},
+    {h:"Q1",v:r=>r.q1,num:true},{h:"Top venue",v:r=>r.top},{h:"Active",v:r=>r.fy,f:r=>r.fy+"–"+r.ly}];
+  const q=document.getElementById("fx-q"), cb=document.getElementById("fx-core");
+  const upd=()=>{ const s=q.value.toLowerCase(); const rows=F.filter(r=>on.has(r.i)&&(!cb.checked||r.core)&&(!s||(r.n+" "+r.dep+" "+r.top).toLowerCase().includes(s)));
+    document.getElementById("fx-n").textContent=rows.length+" authors"; table("t-fx",cols,rows,{sort:4,limit:300}); };
+  q.oninput=upd; cb.onchange=upd; document.getElementById("fx-inst").onchange=e=>{ e.target.checked?on.add(e.target.value):on.delete(e.target.value); upd(); }; upd();
+  // compare two faculty
+  const opts=core.slice().sort((a,b)=>a.n.localeCompare(b.n)).map(r=>`<option value="${F.indexOf(r)}">${esc(r.n)} (${AB[r.i]})</option>`).join("");
+  const sa=document.getElementById("fx-a"), sb=document.getElementById("fx-b"); sa.innerHTML=opts; sb.innerHTML=opts;
+  const byCit=core.slice().sort((a,b)=>b.cit-a.cit); sa.value=F.indexOf(byCit[0]); sb.value=F.indexOf(byCit.find(r=>r.i!==byCit[0].i)||byCit[1]);
+  const bars=(id,r)=>chart(id,{type:"bar",data:{labels:YEARS.map(y=>"'"+String(y).slice(2)),datasets:[{label:r.n+": papers per year",data:r.yrs,backgroundColor:col(r.i),borderRadius:3}]},
+    options:baseOpts({plugins:{legend:{labels:{boxWidth:10}}}})});
+  const cmp=()=>{ const A_=F[+sa.value], B_=F[+sb.value]; bars("c-fxa",A_); bars("c-fxb",B_);
+    const qs=r=>{const t=r.q.reduce((a,b)=>a+b,0)||1; return ["Q1","Q2","Q3","Q4","Unr."].map((x,k)=>`${x} ${Math.round(100*r.q[k]/t)}%`).join(" · ");};
+    const rows=[["Papers",r=>r.p],["Journal / conference",r=>r.j,r=>r.j+" / "+r.c],["Citations",r=>r.cit,r=>fmt(r.cit)],["Citations per paper",r=>r.p?r.cit/r.p:0,r=>(r.p?r.cit/r.p:0).toFixed(1)],
+      ["h-index (window)",r=>r.h],["Career h-index",r=>r.hl??-1,r=>r.hl??"–"],["Q1 journal papers",r=>r.q1],["Active years",r=>r.ly-r.fy+1,r=>r.fy+"–"+r.ly]];
+    document.getElementById("t-fx2").innerHTML=`<thead><tr><th class="num">${esc(A_.n)}</th><th style="text-align:center">measure</th><th>${esc(B_.n)}</th></tr></thead><tbody>`+
+      rows.map(([l,f,fm])=>{const a=f(A_),b=f(B_);return `<tr><td class="num ${a>b?"win":""}">${fm?fm(A_):a}</td><td style="text-align:center" class="muted">${l}</td><td class="${b>a?"win":""}">${fm?fm(B_):b}</td></tr>`;}).join("")+
+      `<tr><td class="num muted">${qs(A_)}</td><td style="text-align:center" class="muted">journal quartiles</td><td class="muted">${qs(B_)}</td></tr></tbody>`; };
+  sa.onchange=cmp; sb.onchange=cmp; cmp();
+  chart("c-fxs",{type:"bubble",data:{datasets:INST.map(i=>({label:i,data:core.filter(r=>r.i===i).map(r=>({x:r.p,y:r.cit,r:3+r.h/2.2,n:r.n,h:r.h})),backgroundColor:col(i)+"99",borderColor:col(i)}))},
+    options:baseOpts({scales:{x:{title:{display:true,text:"papers (2016–2026)",color:css("--text-2")}},y:{title:{display:true,text:"citations",color:css("--text-2")}}},
+      plugins:{tooltip:{callbacks:{label:c=>`${c.raw.n}: ${c.raw.x} papers, ${fmt(c.raw.y)} citations, h ${c.raw.h}`}}}})});
+}
+
+// ── Graph analytics ────────────────────────────────────
+function renderGraphx(){
+  const G=D.graphx; if(!G) return;
+  const who=(n,i)=>`<span class="swatch" style="background:${col(i)}"></span>${esc(n)}`;
+  table("t-gpairs",[{h:"Author A",v:r=>r.a,f:r=>who(r.a,r.ia)},{h:"Author B",v:r=>r.b,f:r=>who(r.b,r.ib)},{h:"Shared papers",v:r=>r.w,num:true}],G.pairs,{sort:2});
+  document.getElementById("teams-note").textContent=`Three authors of the institutes who appear together on ≥5 papers (papers with ≤12 such authors). ${G.teams_total} such teams; the 15 largest are shown. ${G.teams_cross} of the ${G.teams_total} mix authors of two institutes.`;
+  table("t-teams",[{h:"Team",v:r=>r.m[0].n,f:r=>r.m.map(x=>who(x.n,x.i)).join("<br>")},{h:"Papers",v:r=>r.p,num:true},{h:"Years",v:r=>r.y}],G.teams,{sort:1});
+  chart("c-clust",{type:"bar",data:{labels:G.clust.bins,datasets:INST.map(i=>({label:i,data:G.clust.counts[i],backgroundColor:col(i),borderRadius:3}))},
+    options:baseOpts({scales:{x:{title:{display:true,text:"local clustering coefficient",color:css("--text-2")}},y:{title:{display:true,text:"authors",color:css("--text-2")}}}})});
+  document.getElementById("syn-note").innerHTML=`Pairs of core faculty at <b>different</b> institutes who have <b>never co-authored</b>. Score = topic similarity (cosine over the OpenAlex subfields of their papers) × (1 + 0.5 × co-authors they share, capped at 3). It suggests introductions; it is not a prediction and was not validated (${G.synergy_core} core faculty compared).`;
+  const pairsSel=document.getElementById("syn-pair");
+  const pk=r=>[AB[r.ia],AB[r.ib]].sort().join("–");
+  [...new Set(G.synergy.map(pk))].sort().forEach(k=>pairsSel.insertAdjacentHTML("beforeend",`<option value="${k}">${k}</option>`));
+  const mn=document.getElementById("syn-min");
+  const upd=()=>{ document.getElementById("syn-v").textContent=(+mn.value).toFixed(2);
+    const rows=G.synergy.filter(r=>r.sim>=+mn.value&&(!pairsSel.value||pk(r)===pairsSel.value));
+    document.getElementById("syn-n").textContent=rows.length+" pairs";
+    table("t-syn",[{h:"Faculty A",v:r=>r.a,f:r=>who(r.a,r.ia)+`<br><span class="muted">${esc(r.da)}</span>`},{h:"Faculty B",v:r=>r.b,f:r=>who(r.b,r.ib)+`<br><span class="muted">${esc(r.db)}</span>`},
+      {h:"Shared topics",v:r=>r.shared.join(", "),f:r=>esc(r.shared.join(" · "))},{h:"Shared co-authors",v:r=>r.cn,num:true},
+      {h:"Similarity",v:r=>r.sim,num:true,f:r=>r.sim.toFixed(2)},{h:"Score",v:r=>r.score,num:true,f:r=>r.score.toFixed(2)}],rows,{sort:5,limit:40,empty:"No pairs at this threshold."}); };
+  mn.oninput=upd; pairsSel.onchange=upd; upd();
+}
+
+// ── Data audit & rigour ────────────────────────────────
+function renderAudit(){
+  const A_=D.audit||[];
+  table("t-audit",[{h:"Item",v:r=>r.label},...INST.map(i=>({h:AB[i],v:r=>r.vals[i]??-1,num:true,f:r=>r.vals[i]==null?"–":r.vals[i]+"%"})),
+    {h:"All",v:r=>r.vals.All,num:true,f:r=>`<b>${r.vals.All}%</b>`},{h:"Status",v:r=>r.status,f:r=>r.status==="n/a"?'<span class="muted">n/a</span>':`<span class="st-${r.status}">● ${r.status}</span>`},
+    {h:"Why it matters",v:r=>r.note,f:r=>`<span class="muted">${esc(r.note)}</span>`}],A_);
+  const core=(D.facx||[]).filter(r=>r.core&&r.hl!=null);
+  const mx=Math.max(...core.map(r=>Math.max(r.h,r.hl)),10);
+  chart("c-hh",{type:"scatter",data:{datasets:[...INST.map(i=>({label:i,data:core.filter(r=>r.i===i).map(r=>({x:r.hl,y:r.h,n:r.n})),backgroundColor:col(i),pointRadius:4})),
+      {label:"window = career",data:[{x:0,y:0},{x:mx,y:mx}],showLine:true,pointRadius:0,borderColor:css("--muted"),borderDash:[5,4],borderWidth:1}]},
+    options:baseOpts({scales:{x:{type:"linear",title:{display:true,text:"career h-index (OpenAlex)",color:css("--text-2")}},y:{title:{display:true,text:"window h-index (this dataset)",color:css("--text-2")}}},
+      plugins:{tooltip:{callbacks:{label:c=>c.raw.n?`${c.raw.n}: window ${c.raw.y}, career ${c.raw.x}`:""}}}})});
+  const ratio=core.map(r=>r.hl?r.h/r.hl:0);
+  document.getElementById("hh-note").textContent=`${core.length} core faculty with a career h-index. Median share of the career h-index earned inside this dataset: ${Math.round(100*median(ratio))}%.`;
+  const cn=(D.insights||{}).citation_network||{}, cs=ST.communities||{};
+  document.getElementById("rig-list").innerHTML=[
+    `<b>Self-citation:</b> ${cn.author_self_citation_pct}% of citations between the institutes' papers share an author; internal PageRank is read as "continued research lines", not influence.`,
+    `<b>Institutional homophily:</b> ${cn.same_institution_pct}% of internal citations stay inside the citing institute vs ${cn.same_institution_null_pct}% with shuffled targets (z = ${cn.homophily_z}).`,
+    `<b>Duplicates:</b> preprint / repository versions merged into the published paper; citation count = maximum over versions.`,
+    `<b>Author identity:</b> name-only merging would create ${(ST.identity_sensitivity||{}).name_only?.inter_institute_links} instead of ${(ST.identity_sensitivity||{}).conservative?.inter_institute_links} inter-institute links — the conservative rule is used.`,
+    `<b>Community stability:</b> Louvain modularity ${cs.modularity_mean} ± ${cs.modularity_sd} over ${cs.seeds} seeds; pairwise NMI ${cs.pairwise_nmi_mean}.`,
+    `<b>Mega-collaborations:</b> papers with >50 authors are excluded from normalised impact and from external co-author edges.`].map(x=>"<li>"+x+"</li>").join("");
+}
+
+document.getElementById("foot-upd").textContent="last updated "+D.meta.generated;
+
 // ── Errors ─────────────────────────────────────────────
 window.addEventListener("error",e=>{ const b=document.getElementById("errbar"); b.textContent="Something went wrong while drawing this page ("+e.message+"). Other pages still work; try reloading."; b.style.display="block"; setTimeout(()=>b.style.display="none",9000); });
 if(typeof d3==="undefined"||typeof Chart==="undefined") document.getElementById("main").insertAdjacentHTML("afterbegin","<div class='warn'>Chart libraries failed to load; charts are unavailable.</div>");
@@ -1408,7 +1784,10 @@ function show(p){
     if(p==="overview") renderOverview(); else if(p==="findings") renderFindings();
     else if(p==="citation") renderCitation(); else if(p==="authorship") renderAuthorship();
     else if(p==="india") renderIndia(); else if(p==="method") renderMethod(); else if(p==="compare") renderCompare();
-    else if(p==="explorer") renderExplorer(); else if(p==="course") renderCourse(); else renderInst(p); }
+    else if(p==="explorer") renderExplorer(); else if(p==="course") renderCourse();
+    else if(p==="pubs") renderPubsPage(); else if(p==="faculty") renderFaculty();
+    else if(p==="graphx") renderGraphx(); else if(p==="audit") renderAudit(); else renderInst(p); }
+  if(["graphx","audit"].includes(p)) setAdv(true);
   try{ localStorage.setItem("g10-page",p); }catch(e){}
 }
 document.querySelectorAll(".nav").forEach(b=>b.onclick=()=>show(b.dataset.p));
