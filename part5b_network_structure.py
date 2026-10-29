@@ -141,7 +141,13 @@ def citation_properties(G):
 def per_institution(G, at):
     out = {}
     for inst in C.INST_NAMES:
-        H = G.subgraph([n for n, d in G.nodes(data=True) if d["inst"] == inst]).copy()
+        # build in a fixed node/edge order: G.subgraph() iterates a set, whose order
+        # changes between runs and makes the seeded Louvain result non-reproducible
+        keep = sorted(n for n, d in G.nodes(data=True) if d["inst"] == inst)
+        ks = set(keep)
+        H = nx.Graph()
+        H.add_nodes_from((n, G.nodes[n]) for n in keep)
+        H.add_edges_from(sorted((min(a, b), max(a, b), d) for a, b, d in G.edges(data=True) if a in ks and b in ks))
         p, gc = undirected_properties(H)
         comms = nx.community.louvain_communities(H, weight="weight", seed=42)
         p["communities"] = len(comms)
@@ -151,11 +157,11 @@ def per_institution(G, at):
         bet = nx.betweenness_centrality(H)
         deg = dict(H.degree())
         p["top_degree"] = [{"name": H.nodes[n]["name"], "degree": deg[n]}
-                           for n in sorted(deg, key=deg.get, reverse=True)[:5]]
+                           for n in sorted(deg, key=lambda n: (-deg[n], n))[:5]]
         p["top_betweenness"] = [{"name": H.nodes[n]["name"], "betweenness": round(bet[n], 4)}
-                                for n in sorted(bet, key=bet.get, reverse=True)[:5]]
+                                for n in sorted(bet, key=lambda n: (-bet[n], n))[:5]]
         # how dependent is the institute's giant component on its top broker?
-        top = max(bet, key=bet.get)
+        top = min(bet, key=lambda n: (-bet[n], n))
         rest = H.copy()
         rest.remove_node(top)
         p["giant_after_removing_top_broker"] = len(max(nx.connected_components(rest), key=len))
@@ -221,7 +227,7 @@ def bridges(G, at):
     bet = nx.betweenness_centrality(G, weight=None)
     for r in rows:
         r["betweenness"] = round(bet[r["author_id"]], 5)
-    rows.sort(key=lambda r: -r["betweenness"])
+    rows.sort(key=lambda r: (-r["betweenness"], r["author_id"]))
 
     # minimum number of authors whose removal separates two institutes
     cuts = {}
@@ -276,7 +282,7 @@ def robustness(G, bet, steps=(0, .005, .01, .02, .03, .05, .075, .1, .15, .2)):
     inst = nx.get_node_attributes(G, "inst")
     base_ref = sum(Counter(inst[n] for n in G)[a] * Counter(inst[n] for n in G)[b] for a, b in PAIRS)
     n = G.number_of_nodes()
-    order_t = sorted(G, key=lambda x: -bet[x])
+    order_t = sorted(G, key=lambda x: (-bet[x], x))
     out = {"fraction_removed": list(steps), "targeted": {"giant": [], "cross_reach": []},
            "random": {"giant": [], "cross_reach": [], "giant_sd": [], "cross_reach_sd": []}}
     g0 = len(max(nx.connected_components(G), key=len))
@@ -386,7 +392,7 @@ def community_stability(G, seeds=10):
             "pairwise_nmi_mean": round(float(np.mean(nm)), 3), "pairwise_nmi_min": round(float(np.min(nm)), 3),
             "communities_10plus": len(big),
             "single_institute_communities_pct": round(sum(p >= 0.9 for p in purity) / len(big) * 100, 1),
-            "mixed_communities": [{"size": len(c), "institutions": dict(Counter(inst[n] for n in c))}
+            "mixed_communities": [{"size": len(c), "institutions": dict(sorted(Counter(inst[n] for n in c).items()))}
                                   for c, p in zip(big, purity) if p < 0.9]}
 
 
@@ -400,7 +406,7 @@ def centralities(gc, bet_full):
     corr = {f"{a}~{b}": round(float(stats.spearmanr([M[a][k] for k in keys], [M[b][k] for k in keys]).correlation), 3)
             for a, b in combinations(M, 2)}
     top = {name: [{"name": gc.nodes[n]["name"], "institution": gc.nodes[n]["inst"], "value": round(v[n], 5)}
-                  for n in sorted(v, key=v.get, reverse=True)[:10]] for name, v in M.items()}
+                  for n in sorted(v, key=lambda n: (-round(v[n], 9), n))[:10]] for name, v in M.items()}
     # eigenvector mass by institute: where does "influence" concentrate?
     mass = Counter()
     for n, v in eig.items():
@@ -445,7 +451,7 @@ def shared_partners(o):
     clus = dict(zip(ind["partner_openalex_id"], ind["partner_cluster"]))
     sp = {(r.your_inst, r.partner_openalex_id): r.shared_papers for r in ind.itertuples()}
     common = set.intersection(*sets.values())
-    top_common = sorted(common, key=lambda p: -min(sp[(i, p)] for i in C.INST_NAMES))[:10]
+    top_common = sorted(common, key=lambda p: (-min(sp[(i, p)] for i in C.INST_NAMES), names[p]))[:10]
     top_own = {i: [{"name": r.partner_inst, "papers": int(r.shared_papers)} for r in
                    ind[ind["your_inst"] == i].sort_values("shared_papers", ascending=False).head(3).itertuples()]
                for i in C.INST_NAMES}
