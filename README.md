@@ -7,7 +7,7 @@ A network-science study of the research output of **IIIT Allahabad (IIITA)**,
 OpenAlex. It covers citation and co-authorship networks, statistical baselines,
 an interactive dashboard, and a 5-page report.
 
-* **Dashboard:** *not yet deployed* — see [Deployment](#deployment). The link will be added here once the site is live.
+* **Live dashboard: <https://fancy-clafoutis-0ff991.netlify.app/>** (Netlify)
 * **Report:** [10_IIIT.pdf](10_IIIT.pdf) (5 pages)
 * **Decision log:** [DECISIONS.md](DECISIONS.md)
 
@@ -252,6 +252,11 @@ the numbers above.
 
 ## Deployment
 
+**Live:** <https://fancy-clafoutis-0ff991.netlify.app/>, hosted on Netlify and
+deployed with Netlify Drop from a local build of `site/`. It was checked after
+deployment: the served page matches the local build apart from a comment Netlify
+adds, and every page renders without errors.
+
 The dashboard is a static, self-contained HTML file. It needs no server, build
 step or external requests, because D3 and Chart.js are inlined. `site/` is
 gitignored because the page embeds author names and paper records, so it is
@@ -265,13 +270,14 @@ deployed from a local build rather than built from the repository.
    netlify login
    netlify deploy --dir=site --prod
    ```
-3. Put the URL in this README, then rebuild the report with the link:
-   `DASHBOARD_URL=https://<your-site>.netlify.app python part6_report.py`.
+3. To update the live site after re-running the pipeline, open the site in the
+   Netlify UI → **Deploys** and drag the new `site/` folder onto it (or run
+   `netlify deploy --dir=site --prod`). The URL stays the same.
+
+The URL is the default of `DASHBOARD_LIVE_URL` in `group10_common.py`, which the
+report uses. Set `DASHBOARD_URL` to override it if the site moves.
 
 **Vercel alternative:** `npx vercel deploy site --prod`.
-
-The dashboard has **not** been deployed yet. No public URL exists until one of the
-steps above is completed.
 
 ## Limitations and future work
 

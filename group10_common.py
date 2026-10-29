@@ -53,9 +53,9 @@ OUR_CLUSTER = "IIIT"
 TEAM_NAME = "Titan Mandal"
 TEAM_MEMBERS = ["Hrishikesh", "Sarvesh", "Shourya"]
 REPO_URL = "https://github.com/sarvesh2005takbhate/dpcn_A2"
-# Public dashboard URL (set after deploying site/ - see README "Deployment").
+# Public dashboard URL (Netlify; deployed from a local build of site/ - see README "Deployment").
 # The built dashboard embeds node-level data, so it is not committed to git.
-DASHBOARD_LIVE_URL = os.environ.get("DASHBOARD_URL", "").strip()
+DASHBOARD_LIVE_URL = os.environ.get("DASHBOARD_URL", "").strip() or "https://fancy-clafoutis-0ff991.netlify.app/"
 REPORT_URL = REPO_URL + "/blob/main/10_IIIT.pdf"
 
 # ─────────────────────────────────────────────
