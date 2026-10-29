@@ -70,29 +70,96 @@ def affiliated_authorships(work, inst_id, inst_name):
         if any(i["id"] == inst_id for i in a["insts"]):
             raw = [af["s"] for af in a["affs"] if inst_id in af["i"]] or [af["s"] for af in a["affs"]]
             dept = C.most_common_nonempty(C.department_from_affiliation(s) for s in raw)
-            # authorships without an OpenAlex author ID get a name-based pseudo ID
-            aid = a["aid"] or "noid:" + C.norm_person(a["name"])
+            # authorships without an OpenAlex author ID get a per-paper pseudo ID;
+            # resolve_author_identities() decides whether it can join anyone else
+            aid = a["aid"] or f"noid:{work['id']}:{C.norm_person(a['name'])}"
             out.append({"aid": aid, "name": a["name"], "pos": a["pos"],
                         "corr": a["corr"], "dept": dept})
     return out
 
 
-def canonical_author_map(records):
-    """Merge OpenAlex author IDs that are the same person (identical normalised
-    name at our institutions). Returns raw id -> (canonical id, display name)."""
-    by_name = defaultdict(Counter)
-    names = defaultdict(Counter)
-    for r in records:
-        key = C.norm_person(r["name"])
-        by_name[key][r["aid"]] += 1
-        names[key][r["name"]] += 1
-    mapping = {}
-    for key, ids in by_name.items():
-        canon = ids.most_common(1)[0][0]
-        disp = names[key].most_common(1)[0][0]
-        for aid in ids:
-            mapping[aid] = (canon, disp)
-    return mapping
+def resolve_author_identities(adf, works):
+    """Conservative author disambiguation (see DECISIONS.md, section 2).
+
+    The OpenAlex author ID is the unit of identity. Two records (OpenAlex IDs,
+    or per-paper pseudo IDs of authorships that have no OpenAlex ID) are merged
+    only when ALL of the following hold:
+      1. identical normalised name, with at least two name tokens;
+      2. both have papers at the same assigned institution;
+      3. they never appear on the same paper (that would be two people);
+      4. they share at least one OpenAlex co-author ID across their papers.
+    A matching name alone is never enough. Merges are never made across
+    institutions; an OpenAlex ID that OpenAlex itself attaches to two of the
+    institutes is kept as one person (a genuine bridge or move).
+
+    Returns (raw id -> canonical id, raw id -> display name, audit DataFrame).
+    """
+    papers, coauth, insts, names = defaultdict(set), defaultdict(set), defaultdict(set), defaultdict(Counter)
+    for wid, rid, inst, name in zip(adf["openalex_id"], adf["raw_author_id"], adf["institution"], adf["author_name"]):
+        papers[rid].add(wid)
+        insts[rid].add(inst)
+        names[rid][name] += 1
+        coauth[rid] |= {a["aid"] for a in works[wid]["authorships"] if a["aid"] and a["aid"] != rid}
+
+    parent = {r: r for r in papers}
+
+    def find(r):
+        while parent[r] != r:
+            parent[r] = parent[parent[r]]
+            r = parent[r]
+        return r
+
+    members = {r: {r} for r in papers}
+    groups = defaultdict(list)
+    for rid in papers:
+        key = C.norm_person(names[rid].most_common(1)[0][0])
+        for inst in insts[rid]:
+            groups[(key, inst)].append(rid)
+
+    audit = []
+    for (key, inst), rids in groups.items():
+        if len(rids) < 2:
+            continue
+        if len(key.split()) < 2:
+            for rid in rids:
+                audit.append({"name_key": key, "institution": inst, "raw_author_id": rid,
+                              "decision": "kept separate", "reason": "single-token name"})
+            continue
+        # strongest evidence first: largest records merge first
+        rids = sorted(rids, key=lambda r: (-len(papers[r]), r))
+        for i, a in enumerate(rids):
+            for b in rids[i + 1:]:
+                ra, rb = find(a), find(b)
+                if ra == rb:
+                    continue
+                pa = set().union(*(papers[m] for m in members[ra]))
+                pb = set().union(*(papers[m] for m in members[rb]))
+                if pa & pb:
+                    audit.append({"name_key": key, "institution": inst, "raw_author_id": b,
+                                  "decision": "kept separate", "reason": f"co-occurs on a paper with {a}"})
+                    continue
+                ca = set().union(*(coauth[m] for m in members[ra]))
+                cb = set().union(*(coauth[m] for m in members[rb]))
+                shared = (ca & cb) - members[ra] - members[rb]
+                if not shared:
+                    audit.append({"name_key": key, "institution": inst, "raw_author_id": b,
+                                  "decision": "kept separate", "reason": f"same name as {a}, no shared co-author"})
+                    continue
+                parent[rb] = ra
+                members[ra] |= members.pop(rb)
+                audit.append({"name_key": key, "institution": inst, "raw_author_id": b,
+                              "decision": "merged", "reason": f"into {a}: {len(shared)} shared co-author(s)"})
+
+    canon, disp = {}, {}
+    for root, ms in members.items():
+        # canonical ID: the real OpenAlex ID with most papers (pseudo IDs only if no real one)
+        best = sorted(ms, key=lambda r: (r.startswith("noid:"), -len(papers[r]), r))[0]
+        name = Counter()
+        for m in ms:
+            name.update(names[m])
+        for m in ms:
+            canon[m], disp[m] = best, name.most_common(1)[0][0]
+    return canon, disp, pd.DataFrame(audit)
 
 
 # ─────────────────────────────────────────────
@@ -199,10 +266,13 @@ def build_dataset(works, inflow, outflow):
     df = pd.DataFrame(rows).sort_values(["institution", "year", "citations"],
                                         ascending=[True, True, False])
     adf = pd.DataFrame(auth_rows)
-    amap = canonical_author_map(adf.rename(columns={"raw_author_id": "aid",
-                                                    "author_name": "name"}).to_dict("records"))
-    adf["author_id"] = adf["raw_author_id"].map(lambda a: amap[a][0])
-    adf["author_name"] = adf["raw_author_id"].map(lambda a: amap[a][1])
+    canon, disp, audit = resolve_author_identities(adf, works)
+    adf["author_id"] = adf["raw_author_id"].map(canon)
+    adf["author_name"] = adf["raw_author_id"].map(disp)
+    audit.to_csv(C.IDENTITY_CSV, index=False, encoding="utf-8-sig")
+    merged = (audit["decision"] == "merged").sum() if len(audit) else 0
+    print(f"  Authors: {adf['raw_author_id'].nunique()} raw IDs -> {adf['author_id'].nunique()} people "
+          f"({merged} evidence-based merges; {len(audit) - merged} same-name records kept separate)")
     return df, adf
 
 

@@ -53,8 +53,9 @@ OUR_CLUSTER = "IIIT"
 TEAM_NAME = "Titan Mandal"
 TEAM_MEMBERS = ["Hrishikesh", "Sarvesh", "Shourya"]
 REPO_URL = "https://github.com/sarvesh2005takbhate/dpcn_A2"
-DASHBOARD_FILE_URL = REPO_URL + "/blob/main/dashboard.html"
-DASHBOARD_LIVE_URL = "https://htmlpreview.github.io/?" + DASHBOARD_FILE_URL
+# Public dashboard URL (set after deploying site/ - see README "Deployment").
+# The built dashboard embeds node-level data, so it is not committed to git.
+DASHBOARD_LIVE_URL = os.environ.get("DASHBOARD_URL", "").strip()
 REPORT_URL = REPO_URL + "/blob/main/10_IIIT.pdf"
 
 # ─────────────────────────────────────────────
@@ -76,6 +77,8 @@ DATA_CSV         = "group10_data.csv"
 AUTHORSHIPS_CSV  = os.path.join(OUT_DIR, "group10_authorships.csv")
 FACULTY_CSV      = os.path.join(OUT_DIR, "group10_faculty.csv")
 JACCARD_CSV      = os.path.join(OUT_DIR, "group10_jaccard_similarity.csv")
+IDENTITY_CSV     = os.path.join(OUT_DIR, "group10_author_identity_audit.csv")
+STRUCTURE_JSON   = os.path.join(OUT_DIR, "group10_network_structure.json")
 CITATION_CSV     = "citation_network.csv"
 AUTHORSHIP_CSV   = "authorship_network.csv"
 INDIAN_CSV       = "indian_connections.csv"

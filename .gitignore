@@ -1,8 +1,5 @@
 __pycache__/
 *.pyc
-cache/*.tmp
-cache/_*
-cache/*.log
 .venv/
 venv/
 .streamlit/secrets.toml
@@ -10,3 +7,38 @@ venv/
 .DS_Store
 Thumbs.db
 ~$*
+
+# ── Private data (never commit; see README "Dataset and privacy") ──
+# main dataset and the network edge lists (author names, paper-level records)
+group10_data.csv
+citation_network.csv
+authorship_network.csv
+indian_connections.csv
+*_data.csv
+# raw OpenAlex responses
+cache/
+data/
+raw/
+# derived outputs that contain node-level / author-level records
+outputs/*.csv
+outputs/*.json
+outputs/*.md
+# built dashboard: it embeds author names and paper records, so it is deployed
+# from a local build (site/) instead of being committed
+dashboard.html
+site/
+.netlify/
+.vercel/
+
+# ── Secrets and local configuration ──
+.env
+.env.*
+!.env.example
+*.key
+*.pem
+
+# local scratch
+prompt.txt
+# charts whose legends name individual authors (local only)
+outputs/charts/f4_authorship_network.png
+outputs/charts/11_authorship_network.png

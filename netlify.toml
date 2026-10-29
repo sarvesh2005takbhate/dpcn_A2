@@ -1,0 +1,18 @@
+# Netlify configuration for the static dashboard.
+#
+# The dashboard is a single self-contained HTML file (D3 + Chart.js inlined)
+# built locally by `python part4_dashboard.py` into site/index.html. Because the
+# page embeds author- and paper-level records derived from the private dataset,
+# site/ is gitignored and is NOT built on Netlify: deploy the locally built
+# folder with the Netlify CLI or Netlify Drop (see README, "Deployment").
+
+[build]
+  publish = "site"
+  command = "echo 'Prebuilt locally: run part4_dashboard.py, then deploy site/' && test -f site/index.html"
+
+[[headers]]
+  for = "/*"
+  [headers.values]
+    X-Content-Type-Options = "nosniff"
+    Referrer-Policy = "strict-origin-when-cross-origin"
+    X-Frame-Options = "SAMEORIGIN"

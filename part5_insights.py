@@ -539,13 +539,6 @@ def findings(I, summ):
          f"{cn['same_institution_null_pct']}% expected when targets are shuffled (z = {cn['homophily_z']}). Only "
          f"{cn['non_self_edges']} links connect different research groups, so internal PageRank mostly measures group "
          f"continuity rather than cross-group influence."),
-        ("Three islands: tight groups, almost no IIIT–IIIT collaboration",
-         f"The co-authorship network is small-world (clustering {an['clustering']} vs {an['clustering_random']} random, "
-         f"path length {an['path_length']} vs {an['path_length_random']}) and strongly modular (Q = {an['modularity']} vs "
-         f"{an['modularity_null']} ± {an['modularity_null_sd']} in degree-preserving random graphs). Institute "
-         f"assortativity is {an['institution_assortativity']}: only {an['inter_group_papers']} papers link two of the "
-         f"three IIITs. Core faculty have a median of {an['core_median_degree']:.0f} co-authors vs "
-         f"{an['other_median_degree']:.0f} for others."),
         ("Citations follow collaboration, not topic overlap",
          f"Institutes that co-author more with us also cite us more (Spearman ρ = {cv[ia]['spearman']} / "
          f"{cv[ab]['spearman']} / {cv[ib]['spearman']}, all {pfmt(max(x['p'] for x in cv.values()))}). Co-author "

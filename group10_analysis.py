@@ -69,6 +69,7 @@ def load_outputs():
         "auth_metrics": _read_json(C.AUTH_METRICS),
         "flow": _read_json(C.FLOW_JSON),
         "insights": _read_json(C.INSIGHTS_JSON),
+        "structure": _read_json(C.STRUCTURE_JSON),
     }
 
 
