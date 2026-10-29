@@ -42,3 +42,5 @@ prompt.txt
 # charts whose legends name individual authors (local only)
 outputs/charts/f4_authorship_network.png
 outputs/charts/11_authorship_network.png
+# personal presentation notes (local only)
+explanation.txt

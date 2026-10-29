@@ -55,7 +55,7 @@ TEAM_MEMBERS = ["Hrishikesh", "Sarvesh", "Shourya"]
 REPO_URL = "https://github.com/sarvesh2005takbhate/dpcn_A2"
 # Public dashboard URL (Netlify; deployed from a local build of site/ - see README "Deployment").
 # The built dashboard embeds node-level data, so it is not committed to git.
-DASHBOARD_LIVE_URL = os.environ.get("DASHBOARD_URL", "").strip() or "https://sunny-buttercream-e0bf6c.netlify.app/"
+DASHBOARD_LIVE_URL = os.environ.get("DASHBOARD_URL", "").strip() or "https://cozy-kitsune-3c4e7e.netlify.app/"
 REPORT_URL = REPO_URL + "/blob/main/10_IIIT.pdf"
 
 # ─────────────────────────────────────────────
