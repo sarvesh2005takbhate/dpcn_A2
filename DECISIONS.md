@@ -133,7 +133,7 @@ rules) and `group10_analysis.py` (loading and statistics used by every output).
 | 8 | Nodes & edges | Citation: paper → paper if A references B (directed, unweighted, self-loops removed). Co-authorship: author–author if they share a paper (undirected, weight = joint papers). Cross-institute edges to other Indian institutes are written to the CSVs only | `part2_networks.py` | dataset + cache → `citation_network.csv`, `authorship_network.csv`, `indian_connections.csv` | Papers with >50 authors add no external edges | Edge-type counts printed |
 | 9 | Network metrics | PageRank, in-degree, degree/betweenness, Louvain; inferential tests; structure and inter-institution analysis | `part2`, `part5_insights.py`, `part5b_network_structure.py` | networks → `outputs/*.json` | Disconnected graphs: path metrics on giant component | Null models, seed stability, sensitivity analysis |
 | 10 | Derived outputs | Report figures, statistics summary, dashboard data | `part3`, `part5`, `part5b`, `part4`, `part6` | JSON/CSV → PNG, PDF, HTML | Missing inputs → empty-state messages | Dashboard and report read the same JSON |
-| 11 | Dashboard & deployment | One self-contained HTML (D3 + Chart.js inlined) written to `dashboard.html` and `site/index.html`; deployed by uploading `site/` to Netlify (<https://heroic-gumdrop-32cb8b.netlify.app/>) | `part4_dashboard.py`, `netlify.toml` | JSON → HTML | Global error banner; empty tables say so | Headless-browser render of every page with no JS errors |
+| 11 | Dashboard & deployment | One self-contained HTML (D3 + Chart.js inlined) written to `dashboard.html` and `site/index.html`; includes the full author index and co-authorship edge list (`people_network`) for search, profiles, paths and growth; deployed by uploading `site/` to Netlify (<https://heroic-gumdrop-32cb8b.netlify.app/>) | `part4_dashboard.py`, `netlify.toml` | JSON → HTML | Global error banner; empty tables say so | Headless-browser render of every page with no JS errors |
 
 ## 4. Key methodological decisions and trade-offs
 
@@ -149,11 +149,36 @@ rules) and `group10_analysis.py` (loading and statistics used by every output).
 | **Baselines:** ER G(n, m); configuration model for modularity and inter-institute links; target-shuffled citation graphs | ER tests "is it random?"; configuration model controls for hubs; shuffling controls for citation volume | — | Departures from these baselines show non-randomness, not causes |
 | Robustness by **static** betweenness order | Simple, interpretable | Adaptive recomputation | Slightly understates fragility; a thought experiment |
 | Excluding **>50-author** papers from external edges and normalised impact | One 100+ author paper would dominate | Fractional counting | Documented in dashboard and report |
+| **Degrees of separation** = unweighted breadth-first search on the full co-authorship graph (same edges as `part5b`) | "Steps between two people" is the quantity a reader expects; matches the path lengths reported elsewhere | Weighted paths (1/joint papers) | One joint paper counts as much as twenty; the page shows one of possibly many equally short chains and says how many exist |
+| **Network growth**: author enters in the year of their first paper at the IIITs, a link in the year of the pair's first joint paper; cumulative, never removed | Observable in the data; one fixed force layout of the final graph so nodes do not move | Sliding windows (ties expire) | Shows when ties formed, not whether they are still active; yearly counts are computed in Python and the browser recomputes and matches them |
+| Author **profiles and search** cover every author in the network | A path or a table row should lead to the person behind it | Profiles for core faculty only | The public page now names all 4,041 authors (see §5) |
 
 **Known biases.** OpenAlex coverage is weaker before 2018 and for Indian
 conference proceedings. IIITB authors rarely state a department, so departments
 there are mostly inferred. Citation counts depend on paper age, so 2025–26 papers
 are excluded from normalised scores.
+
+**Checks of the final data (November 2026).** The published dashboard was
+rebuilt from the local data and compared with the deployed page: they differ
+only in the build date, the embedded dashboard URL and Netlify's own script. Six randomly chosen papers matched
+the live OpenAlex records exactly (year, citation count, institute). The
+co-authorship numbers (8,667 links, 138 between institutes, assortativity 0.974,
+499 components, maximum degree 154) were recomputed independently from
+`authorship_network.csv`. No duplicate OpenAlex IDs or DOIs, no self-loops and no
+internal citation edges pointing outside the corpus were found. Remaining points:
+* **One paper dominates ABV's citations.** *The Astropy Project … v5.0* (2022,
+  5,037 citations, 137 authors) is 16% of ABV's citations. The attribution is
+  genuine (an ABV author is #126 of 137), but it is ABV's most-cited "selected
+  publication". It carries a ">50 authors" badge and is excluded from
+  normalised impact. OpenAlex has since split the record in two, so the count
+  will change on re-collection.
+* **Partner classes.** Four partner institutions are classed as "IIIT" because
+  their names contain "Institute of Information Technology" (Jaypee, LNM, RCC,
+  Sambalpur University Institute of Information Technology). This affects the IIIT row of the partner-class counts
+  only; it was not corrected so that the report's numbers stay as published.
+* **Citation-date quirks.** 23 of 5,946 internal citations (0.4%) point to a paper
+  OpenAlex dates later than the citing one, and 16 papers lie in citation cycles.
+  Both come from preprint and published versions sharing a record.
 
 ## 5. Reproducibility and privacy
 
@@ -199,4 +224,7 @@ the repository owner's decision.
 **Note on the public dashboard.** The deployed dashboard necessarily shows the
 author names and paper titles behind its networks, as the course requires. These
 are public bibliographic facts from OpenAlex, but publishing the page does make
-them visible. The raw dataset files themselves are not published.
+them visible. Since the search, profile and path features were added, the page
+embeds every one of the 4,041 authors (name, institute, department, papers per
+year, co-authors) and all 6,543 paper titles, not only the authors shown in
+tables and the explorer. The raw dataset files themselves are not published.

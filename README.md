@@ -96,8 +96,9 @@ evidence* or *Suggestive*) · Institution comparison · Publications & research 
 (research-profile radar, top venues, quartile mix by field, Lorenz curve, active
 topics) · Faculty (all-institute table, compare two faculty, papers-vs-citations) ·
 one page per institute (faculty table, h-index, quartiles, top venues, departments,
-most-cited papers) · Network explorer · Network analysis · Citation network ·
-Indian connectivity · Course connections · Data & methods. Behind *Show advanced
+most-cited papers) · Network explorer · **Degrees of separation** · **Network
+growth** · Network analysis · Citation network · Indian connectivity · Course
+connections · Data & methods (with a glossary of every term used). Behind *Show advanced
 analysis*: Graph analytics (strongest pairs, recurring teams, local clustering, a
 heuristic cross-institute "synergy" list) and Data audit & rigour (OpenAlex
 completeness per institute, window vs career h-index).
@@ -117,6 +118,26 @@ every element drawn from our own data:
 * a "selected publications" list of the 10 most-cited papers.
 
 The Network explorer adds a top-N selector and summary counters.
+
+Interactive features across the whole dashboard:
+* **Search (Ctrl+K or `/`).** One search box for all 4,041 authors, all 6,543
+  papers and every page, used with the keyboard.
+* **Author profiles.** Clicking a name anywhere (any table, the explorer, search,
+  the growth map) opens a side panel: papers, co-authors, betweenness rank,
+  Louvain community, papers per year, co-authors at the three IIITs (those at
+  another IIIT outlined), most-cited papers with DOI links and the OpenAlex
+  profile. Profiles have shareable links (`#author=<OpenAlex ID>`), and every page
+  has its own (`#explorer`, `#paths`, …).
+* **Degrees of separation.** Pick two authors to see the shortest co-authorship
+  chain between them in the full network (breadth-first search): where the chain
+  crosses institutes, how many equally short chains exist, and how far every
+  other author is from the first one. Buttons pick a random pair from two
+  institutes or from one.
+* **Network growth.** The full co-authorship network on one fixed layout, played
+  year by year from 2016 to 2026 (authors appear with their first paper, links
+  with the pair's first joint paper; links between institutes in pink). Counters
+  and two charts follow the giant component and the links between institutes.
+  The share of links that join two IIITs peaked in 2017 and has fallen since.
 
 ## Dataset and privacy
 
@@ -316,7 +337,8 @@ report uses. Set `DASHBOARD_URL` to override it if the site moves.
   effects.
 * **Future work:**
   * ORCID / faculty-page verification of bridge authors;
-  * a temporal analysis (do inter-IIIT ties grow after moves?);
+  * a temporal analysis beyond the descriptive *Network growth* page (do
+    inter-IIIT ties grow after moves?);
   * link prediction with a time-split evaluation once more inter-IIIT papers exist;
   * Leiden communities.
 

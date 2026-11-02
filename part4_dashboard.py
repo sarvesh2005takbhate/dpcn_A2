@@ -44,6 +44,7 @@ LIBS = {
 KEYS = {"IIIT Allahabad": "iiita", "ABV-IIITM Gwalior": "abv", "IIIT Bangalore": "iiitb"}
 CITE_GRAPH_NODES = 220
 EXPLORER_PER_INST = 110
+PEOPLE_TOP_PAPERS = 5        # most-cited papers listed on each author profile
 SITE_DIR = "site"           # deploy folder (gitignored: the page embeds node-level data)
 
 
@@ -327,6 +328,76 @@ def explorer_graph(o, nd):
             "per_inst": EXPLORER_PER_INST}
 
 
+def people_network(o, df):
+    """Every author at the three IIITs plus the FULL co-authorship graph (same
+    edges as part5b: same_institution + inter_group). Feeds the author profiles,
+    the site-wide search, the 'degrees of separation' path finder and the
+    year-by-year growth view. Edge year = year of the pair's first joint paper."""
+    nodes = o["auth_metrics"].get("nodes", {})
+    adf = o["adf"]
+    if not nodes or adf.empty:
+        return None
+    ids = sorted(nodes)
+    ix = {k: n for n, k in enumerate(ids)}
+    years = list(range(C.START_YEAR, C.END_YEAR + 1))
+    inst_ix = {name: n for n, name in enumerate(C.INST_NAMES)}
+
+    ae = o["auth_edges"]
+    ae = ae[ae["edge_scope"].isin(["same_institution", "inter_group"])
+            & ae["author_a_id"].isin(ix) & ae["author_b_id"].isin(ix)]
+    a, b = ae["author_a_id"].map(ix), ae["author_b_id"].map(ix)
+    e = pd.DataFrame({"u": pd.concat([a, b], axis=1).min(axis=1), "v": pd.concat([a, b], axis=1).max(axis=1),
+                      "doi": ae["paper_doi"], "y": ae["year"]})
+    e = e[e["u"] != e["v"]]
+    e = (e.groupby(["u", "v"]).agg(w=("doi", lambda s: max(s.nunique(), 1)), y=("y", "min"))
+         .reset_index().sort_values(["u", "v"]))
+
+    au = adf[adf["author_id"].isin(ix)].drop_duplicates(["author_id", "openalex_id"])
+    yearly = au.groupby(["author_id", "year"]).size()
+    first = au.groupby("author_id")["year"].min()
+    n_inst = au.groupby("author_id")["institution"].nunique()
+    top = (au.sort_values(["citations", "year"], ascending=[False, False])
+           .groupby("author_id").head(PEOPLE_TOP_PAPERS))
+    # every unique paper, most-cited first (also the search index for papers)
+    papers = A.unique_papers(df).sort_values(["citations", "year"], ascending=[False, False]).set_index("openalex_id")
+    pid = {w: n for n, w in enumerate(papers.index)}
+    top_of = top.groupby("author_id")["openalex_id"].apply(lambda s: [pid[w] for w in s]).to_dict()
+
+    def txt(v, n):
+        return "" if pd.isna(v) else str(v)[:n]
+
+    people = []
+    for k in ids:
+        v = nodes[k]
+        people.append([v["name"], inst_ix[v["institution"]], txt(v.get("department"), 40), int(v["papers"]),
+                       int(v["degree"]), round(float(v["betweenness_centrality"]), 6), int(v["community"]),
+                       int(bool(v["is_core_faculty"])), int(first.get(k, C.START_YEAR)),
+                       [int(yearly.get((k, y), 0)) for y in years], top_of.get(k, []), int(n_inst.get(k, 1) > 1)])
+
+    # growth: cumulative network at the end of each year
+    G, grow = nx.Graph(), []
+    inst_of = [p[1] for p in people]
+    for y in years:
+        G.add_nodes_from(n for n, p in enumerate(people) if p[8] == y)
+        G.add_edges_from((u, v) for u, v, yy in zip(e["u"], e["v"], e["y"]) if yy == y)
+        comps = sorted((len(c) for c in nx.connected_components(G)), reverse=True) if G.number_of_nodes() else [0]
+        grow.append({"year": y, "authors": G.number_of_nodes(), "links": G.number_of_edges(),
+                     "cross": sum(inst_of[u] != inst_of[v] for u, v in G.edges()),
+                     "giant": comps[0], "components": len(comps),
+                     "new_links": int((e["y"] == y).sum())})
+    last = grow[-1]
+    print(f"  People index: {len(people)} authors, {last['links']} links, {last['cross']} between institutes, "
+          f"{len(pid)} papers indexed")
+    mask = df.groupby("openalex_id")["institution"].apply(lambda s: sum(1 << inst_ix[i] for i in set(s))).to_dict()
+    # e: flat [u, v, joint papers, first joint year - START_YEAR, ...]
+    return {"ids": ids, "a": people, "e": [x for r in e[["u", "v", "w", "y"]].itertuples(index=False)
+                                           for x in (int(r.u), int(r.v), int(r.w), int(r.y) - C.START_YEAR)],
+            # paper: [title, year, citations, doi, venue, bitmask of the three institutes]
+            "p": [[txt(r.title, 110), int(r.year), int(r.citations), C.normalize_doi(r.doi) or "",
+                   txt(r.journal_name, 60), int(mask.get(w, 0))] for w, r in papers.iterrows()],
+            "grow": grow}
+
+
 # ─────────────────────────────────────────────
 # DATA FOR THE PAGE
 # ─────────────────────────────────────────────
@@ -434,6 +505,7 @@ def build_data(o):
     D["structure"] = S
     if nodes and S:
         D["explorer"] = explorer_graph(o, nd)
+    D["people"] = people_network(o, df)
     D["links"] = {"repo": C.REPO_URL, "report": C.REPORT_URL, "dashboard": C.DASHBOARD_LIVE_URL,
                   "team": C.TEAM_NAME, "members": C.TEAM_MEMBERS}
     return D
@@ -620,6 +692,98 @@ select{padding:4px 6px;border:1px solid var(--border);border-radius:6px;backgrou
 .pill.used{background:var(--t1);color:#fff;border-color:transparent}.pill.cmp{background:var(--surface-2)}
 .cc p{font-size:13px;color:var(--text-2);margin:6px 0;max-width:980px}.cc h3{font-size:14px;margin-top:8px}
 .cut{margin-bottom:10px;font-size:12.5px}.cut b{display:block}
+/* ── motion ── */
+.page.on{animation:pgin .35s cubic-bezier(.2,.7,.2,1)}
+@keyframes pgin{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:none}}
+.nav .new{margin-left:auto;font-style:normal;font-size:9.5px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;
+  color:#fff;background:linear-gradient(90deg,var(--s5),var(--s7));padding:1px 6px;border-radius:99px}
+.btn{transition:background .15s,border-color .15s,transform .1s}.btn:hover{border-color:var(--accent);color:var(--text)}
+.btn:active{transform:scale(.97)}
+.btn.pri{background:var(--accent);border-color:var(--accent);color:#fff;font-weight:600}.btn.pri:hover{filter:brightness(1.1);color:#fff}
+.plink{cursor:pointer;border-bottom:1px dotted var(--muted)}.plink:hover{color:var(--accent);border-bottom-color:var(--accent)}
+/* ── search button + palette ── */
+.srchbtn{display:flex;align-items:center;gap:8px;width:calc(100% - 16px);margin:12px 8px 4px;padding:8px 10px;border:1px solid var(--border);
+  border-radius:9px;background:var(--surface-2);color:var(--muted);font:inherit;font-size:12.5px;cursor:pointer;text-align:left;transition:border-color .15s}
+.srchbtn:hover{border-color:var(--accent);color:var(--text-2)}.srchbtn span{font-size:15px;line-height:1}
+.srchbtn em{font-style:normal;flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.srchbtn kbd{white-space:nowrap}
+.srchbtn kbd,.cmdk kbd{margin-left:auto;font:600 10px/1 inherit;padding:3px 5px;border:1px solid var(--border);border-radius:5px;background:var(--surface);color:var(--muted)}
+.cmdk{position:fixed;inset:0;z-index:120;background:rgba(2,8,20,.45);backdrop-filter:blur(3px);display:flex;justify-content:center;align-items:flex-start;padding:10vh 16px 16px}
+.cmdk[hidden]{display:none}
+.cmdk-box{width:min(640px,100%);background:var(--surface);border:1px solid var(--border);border-radius:14px;box-shadow:0 24px 60px rgba(0,0,0,.35);overflow:hidden;animation:pop .18s ease}
+@keyframes pop{from{opacity:0;transform:scale(.97) translateY(-6px)}to{opacity:1;transform:none}}
+.cmdk-in{display:flex;align-items:center;gap:10px;padding:14px 16px;border-bottom:1px solid var(--border)}
+.cmdk-in span{font-size:18px;color:var(--muted)}
+.cmdk-in input{flex:1;border:0;outline:0;background:none;color:var(--text);font:inherit;font-size:15px}
+#cmdk-res{max-height:56vh;overflow:auto;padding:6px}
+.cmdk-g{padding:8px 10px 4px;font-size:10.5px;letter-spacing:.08em;text-transform:uppercase;color:var(--muted)}
+.cmdk-it{display:flex;align-items:center;gap:10px;padding:8px 10px;border-radius:8px;cursor:pointer;font-size:13px}
+.cmdk-it .t{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.cmdk-it small{color:var(--muted);flex-shrink:0}
+.cmdk-it.on{background:var(--surface-2);box-shadow:inset 3px 0 0 var(--accent)}
+.cmdk-it mark{background:none;color:var(--accent);font-weight:600}
+.cmdk-foot{display:flex;gap:16px;padding:8px 14px;border-top:1px solid var(--border);font-size:11px;color:var(--muted)}
+/* ── profile drawer ── */
+.scrim{position:fixed;inset:0;background:rgba(2,8,20,.35);z-index:100;opacity:0;pointer-events:none;transition:opacity .25s}
+.scrim.on{opacity:1;pointer-events:auto}
+.drawer{position:fixed;top:0;right:0;bottom:0;width:min(440px,100%);z-index:110;background:var(--surface);border-left:1px solid var(--border);
+  box-shadow:-20px 0 50px rgba(0,0,0,.18);transform:translateX(105%);transition:transform .32s cubic-bezier(.2,.7,.2,1);overflow-y:auto}
+.drawer.on{transform:none}
+.dclose{position:absolute;top:12px;right:12px;width:32px;height:32px;border-radius:50%;border:1px solid rgba(255,255,255,.4);background:rgba(0,0,0,.25);color:#fff;font-size:20px;line-height:1;cursor:pointer;z-index:2}
+.dhead{padding:28px 22px 18px;color:#fff;background:linear-gradient(135deg,var(--ic),#0b1424 130%);position:relative}
+.dhead .avatar{width:54px;height:54px;border-radius:50%;background:rgba(255,255,255,.18);border:2px solid rgba(255,255,255,.5);display:flex;align-items:center;justify-content:center;font-weight:700;font-size:19px;margin-bottom:10px}
+.dhead h2{font-family:var(--serif);font-size:25px;font-weight:500;line-height:1.15;color:#fff}
+.dhead .dsub{opacity:.85;font-size:12.5px;margin-top:3px}
+.dbadges{display:flex;gap:6px;flex-wrap:wrap;margin-top:10px}.dbadges span{background:rgba(255,255,255,.18);color:#fff;padding:3px 8px;border-radius:99px;font-size:11px;font-weight:600}
+.dbody{padding:16px 22px 26px}
+.dbody h4{font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:var(--muted);margin:18px 0 8px}
+.dkpi{display:grid;grid-template-columns:repeat(4,1fr);gap:8px}
+.dkpi div{background:var(--surface-2);border-radius:10px;padding:9px 8px;text-align:center}
+.dkpi b{display:block;font-size:19px;font-weight:600;color:var(--text);font-variant-numeric:tabular-nums}.dkpi span{font-size:10.5px;color:var(--muted);line-height:1.2;display:block}
+.spark{display:flex;align-items:flex-end;gap:4px;height:64px}.spark div{flex:1;display:flex;flex-direction:column;align-items:center;gap:3px;height:100%;justify-content:flex-end}
+.spark i{display:block;width:100%;border-radius:3px 3px 0 0;background:var(--ic);min-height:2px;transition:height .5s}.spark small{font-size:9px;color:var(--muted)}
+.chips{display:flex;flex-wrap:wrap;gap:6px}
+.chip{display:inline-flex;align-items:center;gap:5px;padding:4px 9px;border:1px solid var(--border);border-radius:99px;background:var(--surface);color:var(--text-2);font:inherit;font-size:12px;cursor:pointer;transition:all .15s}
+.chip:hover{border-color:var(--accent);color:var(--text);transform:translateY(-1px)}.chip small{color:var(--muted);font-size:10.5px}
+.chip.x{border-color:var(--s5)}
+.dpubs{padding-left:18px;font-size:12.5px}.dpubs li{margin-bottom:9px}.dpubs a{color:var(--text)}.dpubs span{display:block;color:var(--muted);font-size:11.5px}
+.dact{display:flex;flex-wrap:wrap;gap:8px;margin-top:20px}.dact a.btn{text-decoration:none}
+.dchoose button{display:block;width:100%;text-align:left;margin-bottom:6px}
+/* ── degrees of separation ── */
+.pathcard{margin-bottom:16px;background:radial-gradient(1200px 200px at 0 0,color-mix(in srgb,var(--s5) 9%,transparent),transparent),var(--surface)}
+.pickrow{display:grid;grid-template-columns:1fr auto 1fr;gap:12px;align-items:end}
+.picker{position:relative}.picker label{display:block;font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:var(--muted);margin-bottom:5px}
+.picker input{width:100%;padding:10px 12px;border:1px solid var(--border);border-radius:10px;background:var(--surface);color:var(--text);font:inherit;font-size:14px}
+.picker input:focus{outline:2px solid color-mix(in srgb,var(--accent) 40%,transparent);border-color:var(--accent)}
+.picker.set input{border-left:4px solid var(--pc)}
+.pk-list{position:absolute;left:0;right:0;top:100%;margin-top:4px;background:var(--surface);border:1px solid var(--border);border-radius:10px;box-shadow:0 12px 30px rgba(0,0,0,.15);z-index:30;max-height:300px;overflow:auto;display:none}
+.pk-list.on{display:block}.pk-list button{display:flex;gap:8px;align-items:center;width:100%;text-align:left;padding:8px 10px;border:0;background:none;color:var(--text);font:inherit;font-size:13px;cursor:pointer}
+.pk-list button:hover,.pk-list button.on{background:var(--surface-2)}.pk-list small{margin-left:auto;color:var(--muted)}
+.iconbtn{width:40px;height:40px;border-radius:50%;border:1px solid var(--border);background:var(--surface);color:var(--text-2);font-size:17px;cursor:pointer;transition:transform .25s}
+.iconbtn:hover{transform:rotate(180deg);border-color:var(--accent)}
+.pathhead{display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin:22px 0 4px}
+.pathhead .big{font-family:var(--serif);font-size:44px;line-height:1;color:var(--accent)}
+.chain{display:flex;flex-wrap:wrap;align-items:center;gap:0;margin:14px 0 4px;row-gap:12px}
+.pnode{border:1px solid var(--border);border-top:4px solid var(--pc);border-radius:10px;padding:9px 12px;background:var(--surface);min-width:130px;max-width:190px;cursor:pointer;
+  opacity:0;animation:hopin .4s forwards;transition:transform .15s,box-shadow .15s}
+.pnode:hover{transform:translateY(-2px);box-shadow:0 8px 18px rgba(0,0,0,.12)}
+.pnode b{display:block;font-size:13px;line-height:1.25}.pnode small{color:var(--muted);font-size:11px}
+.phop{display:flex;flex-direction:column;align-items:center;padding:0 6px;font-size:10.5px;color:var(--muted);opacity:0;animation:hopin .4s forwards}
+.phop i{font-style:normal;font-size:16px;line-height:1;color:var(--muted)}.phop.x i,.phop.x span{color:var(--s5);font-weight:700}
+@keyframes hopin{from{opacity:0;transform:translateX(-8px)}to{opacity:1;transform:none}}
+.readbox p{margin-bottom:9px;font-size:13px;line-height:1.55}
+/* ── network growth ── */
+.grctl input[type=range]{flex:1;min-width:160px;accent-color:var(--accent)}
+.yearbig{font-family:var(--serif);font-size:30px;font-weight:500;color:var(--accent);min-width:64px;font-variant-numeric:tabular-nums}
+.grstats{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:10px;margin:6px 0 12px}
+.grstats div{background:var(--surface-2);border-radius:10px;padding:10px 12px}.grstats b{display:block;font-size:22px;font-weight:600;font-variant-numeric:tabular-nums}
+.grstats span{font-size:11px;color:var(--muted)}.grstats em{font-style:normal;font-size:11px;color:var(--s3);margin-left:4px}
+.grnet{height:600px;background:#050b16}.grnet canvas{display:block;width:100%;height:100%;cursor:grab}
+.grload{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:10px;color:#cbd5e1;font-size:12.5px;pointer-events:none;transition:opacity .4s}
+.grload .bar{width:220px;height:4px;border-radius:4px;background:rgba(255,255,255,.12);overflow:hidden}.grload .bar i{display:block;height:100%;width:0;background:linear-gradient(90deg,var(--s1),var(--s5))}
+.gloss{display:grid;grid-template-columns:190px 1fr;gap:8px 18px;font-size:13px}.gloss dt{font-weight:600}.gloss dd{color:var(--text-2)}
+@media(max-width:860px){.pickrow{grid-template-columns:1fr}.iconbtn{justify-self:center;transform:rotate(90deg)}.grstats{grid-template-columns:repeat(2,1fr)}
+  .grnet{height:420px}.gloss{grid-template-columns:1fr}.gloss dd{margin-bottom:8px}.dkpi{grid-template-columns:repeat(2,1fr)}
+  #side .srchbtn{width:auto;flex-shrink:0;margin:0 6px}#side .srchbtn kbd,#side .nav .new{display:none}}
+@media (prefers-reduced-motion:reduce){.page.on,.pnode,.phop,.cmdk-box{animation:none;opacity:1}.drawer{transition:none}}
 .errbar{position:fixed;bottom:12px;right:12px;max-width:420px;background:#b3261e;color:#fff;padding:10px 12px;border-radius:8px;font-size:12.5px;z-index:99;display:none}
 .finding .num{display:inline-block;width:22px;height:22px;border-radius:50%;background:var(--surface-2);
   border:1px solid var(--border);text-align:center;line-height:20px;font-size:11px;margin-right:6px;color:var(--text)}
@@ -628,6 +792,7 @@ select{padding:4px 6px;border:1px solid var(--border);border-radius:6px;backgrou
 BODY = r"""
 <nav id="side">
   <div class="logo"><b>Research Map · Group 10</b><span>DPCN 2026 · 2016–2026</span></div>
+  <button class="srchbtn" id="srchbtn" aria-label="Search authors, papers and pages"><span>⌕</span><em>Search people, papers…</em><kbd>Ctrl K</kbd></button>
   <div class="navh">Start here</div>
   <button class="nav on" data-p="overview"><span class="dot" style="background:var(--muted)"></span>Overview</button>
   <button class="nav" data-p="findings"><span class="dot" style="background:var(--s5)"></span>Findings &amp; modelling</button>
@@ -638,6 +803,8 @@ BODY = r"""
   %INSTNAV%
   <div class="navh">Networks</div>
   <button class="nav" data-p="explorer"><span class="dot" style="background:var(--t2)"></span>Network explorer</button>
+  <button class="nav" data-p="paths"><span class="dot" style="background:var(--s5)"></span>Degrees of separation<i class="new">new</i></button>
+  <button class="nav" data-p="growth"><span class="dot" style="background:var(--s3)"></span>Network growth<i class="new">new</i></button>
   <button class="nav" data-p="authorship"><span class="dot" style="background:var(--t3)"></span>Network analysis</button>
   <button class="nav" data-p="citation"><span class="dot" style="background:var(--t1)"></span>Citation network</button>
   <button class="nav" data-p="india"><span class="dot" style="background:var(--s4)"></span>Indian connectivity</button>
@@ -915,11 +1082,73 @@ BODY = r"""
   <h1>Data &amp; definitions</h1>
   <div class="sub">How every number on this dashboard is produced</div>
   <div class="card"><ul class="defs" id="defs"></ul></div>
+  <div class="card" style="margin-top:16px"><h3>Terms used</h3><div class="note">Plain-language definitions of the measures on this dashboard</div>
+    <dl class="gloss">
+      <dt>Degree</dt><dd>Number of distinct co-authors an author has at the three IIITs.</dd>
+      <dt>Strength</dt><dd>Degree weighted by joint papers: two people with five joint papers count five.</dd>
+      <dt>Betweenness</dt><dd>Share of shortest paths between other authors that pass through this author. High betweenness = a broker.</dd>
+      <dt>Bridge author</dt><dd>An author with at least one co-author at a different IIIT, or whom OpenAlex places at two of them.</dd>
+      <dt>Minimum node cut</dt><dd>The smallest set of authors whose removal disconnects two institutes completely.</dd>
+      <dt>Giant component</dt><dd>The largest group of authors in which everyone can reach everyone else through co-authors.</dd>
+      <dt>Louvain community</dt><dd>A group of authors more densely connected to each other than to the rest; found by maximising modularity.</dd>
+      <dt>Assortativity</dt><dd>From −1 to 1: how strongly authors link to authors of the same institute. 1 = only within-institute links.</dd>
+      <dt>Configuration model</dt><dd>A random network that keeps every author's degree but rewires who links to whom. The baseline for "expected at random".</dd>
+      <dt>Erdős–Rényi G(n, m)</dt><dd>A random network with the same number of nodes and links, placed uniformly. A deliberately naive baseline.</dd>
+      <dt>Degrees of separation</dt><dd>The number of co-authorship steps on the shortest chain between two authors.</dd>
+      <dt>PageRank</dt><dd>Importance of a paper in the internal citation network: being cited by papers that are themselves cited counts more.</dd>
+      <dt>h-index</dt><dd>h papers with at least h citations each. "Window" uses 2016–2026 papers only; "lifetime" comes from the OpenAlex author profile.</dd>
+      <dt>Q1 – Q4</dt><dd>Scimago SJR quartile of the journal in the paper's year (Q1 = top 25% of its subject category).</dd>
+      <dt>CORE rank</dt><dd>ICORE2026 conference rank (A*, A, B, C). "Unranked" means not listed, not low quality.</dd>
+      <dt>Normalised impact</dt><dd>Citations divided by the average for papers of the same year, field and type. 1.0 = average.</dd>
+      <dt>Jaccard similarity</dt><dd>Overlap of two topic sets: shared topics divided by all topics. 0 = nothing in common, 1 = identical.</dd>
+      <dt>Core faculty</dt><dd>Heuristic: ≥5 papers in ≥3 years, last author on ≥30% and first author on ≤50%. Not an official list.</dd>
+      <dt>Partial year</dt><dd>2026 data stops at the collection date (October 2026); recent papers have had little time to be cited.</dd>
+    </dl></div>
+</section>
+<section class="page" id="p-paths">
+  <h1>Degrees of separation</h1>
+  <div class="sub">Pick any two of the %NPEOPLE% authors to see the shortest chain of co-authors that links them in the full co-authorship network. Each step is one joint paper; the search is breadth-first and unweighted.</div>
+  <div class="card pathcard">
+    <div class="pickrow">
+      <div class="picker" id="pk-a"><label>From</label><input type="search" placeholder="Type an author's name…" autocomplete="off" spellcheck="false"><div class="pk-list" role="listbox"></div></div>
+      <button class="iconbtn" id="pk-swap" title="Swap the two authors" aria-label="Swap the two authors">⇄</button>
+      <div class="picker" id="pk-b"><label>To</label><input type="search" placeholder="Type an author's name…" autocomplete="off" spellcheck="false"><div class="pk-list" role="listbox"></div></div>
+    </div>
+    <div class="controls" style="margin-top:12px"><button class="btn pri" id="pk-rand">🎲 Random pair from two institutes</button><button class="btn" id="pk-rand2">Random pair, same institute</button></div>
+    <div id="path-out"></div>
+  </div>
+  <div class="grid g2">
+    <div class="card"><h3>How far is everyone from <span id="dist-who">the first author</span>?</h3><div class="note">Authors at each co-authorship distance, stacked by institute (unreachable authors left out)</div><div class="cw"><canvas id="c-dist"></canvas></div></div>
+    <div class="card"><h3>Reading the chain</h3><div id="path-read" class="readbox"><p class="muted">Pick two authors.</p></div></div>
+  </div>
+</section>
+<section class="page" id="p-growth">
+  <h1>Network growth, 2016–2026</h1>
+  <div class="sub">The full co-authorship network, built up year by year. An author appears in the year of their first paper and a link in the year of the pair's first joint paper. Positions come from one force layout of the final network, so nothing jumps while it grows.</div>
+  <div class="card" style="margin-bottom:16px">
+    <div class="controls grctl"><button class="btn pri" id="gr-play" aria-label="Play">▶ Play</button>
+      <input type="range" id="gr-y" min="%Y0%" max="%Y1%" value="%Y1%" step="1" aria-label="Year"><b id="gr-yl" class="yearbig">%Y1%</b>
+      <label><input type="checkbox" id="gr-new" checked> highlight links formed this year</label></div>
+    <div class="grstats" id="gr-stats"></div>
+    <div class="net grnet" id="gr-net"><canvas aria-label="Co-authorship network growth"></canvas><div class="grload" id="gr-load"><div class="bar"><i></i></div><span>Laying out the network…</span></div></div>
+    <div class="legend" id="leg-gr"></div>
+    <p class="hint">Scroll to zoom · drag to pan · hover for a name · click an author to open their profile.</p>
+  </div>
+  <div class="grid g2">
+    <div class="card"><h3>The giant component forms</h3><div class="note">Share of authors so far who sit in the largest connected cluster, and number of separate clusters</div><div class="cw"><canvas id="c-gr-giant"></canvas></div></div>
+    <div class="card"><h3>Links between institutes stay rare</h3><div class="note">Cumulative co-author links joining two IIITs (bars) and their share of all links (line)</div><div class="cw"><canvas id="c-gr-cross"></canvas></div></div>
+  </div>
 </section>
 <footer class="pagefoot">© 2026 Group 10 · Team Titan Mandal (Hrishikesh, Sarvesh, Shourya) · DPCN course, instructor Chittaranjan Hens · Data: OpenAlex (CC0), Scimago SJR, ICORE2026 · <span id="foot-upd"></span></footer>
 </main>
 <div class="tip" id="tip"></div>
 <div class="errbar" id="errbar" role="alert"></div>
+<div class="scrim" id="scrim"></div>
+<aside class="drawer" id="drawer" role="dialog" aria-label="Author profile" aria-hidden="true"><button class="dclose" id="dclose" aria-label="Close profile">×</button><div id="dbody"></div></aside>
+<div class="cmdk" id="cmdk" role="dialog" aria-label="Search" hidden><div class="cmdk-box">
+  <div class="cmdk-in"><span>⌕</span><input id="cmdk-q" placeholder="Search %NPEOPLE% authors, %NPAPERS% papers and every page…" autocomplete="off" spellcheck="false"><kbd>Esc</kbd></div>
+  <div id="cmdk-res" role="listbox"></div>
+  <div class="cmdk-foot"><span>↑ ↓ move</span><span>Enter open</span><span>Esc close</span></div></div></div>
 """
 
 INST_PAGE = r"""
@@ -990,7 +1219,9 @@ function table(id, cols, rows, opts={}){
     if(opts.limit) r = r.slice(0, opts.limit);
     if(!r.length){ el.innerHTML = `<tbody><tr><td class="muted">${opts.empty||"No data for this selection."}</td></tr></tbody>`; return; }
     el.innerHTML ="<thead><tr>"+cols.map((c,i)=>`<th class="${c.num?"num":""}" data-i="${i}">${c.h}${i===sortI?(asc?" ▲":" ▼"):""}</th>`).join("")+
-      "</tr></thead><tbody>"+r.map(x=>"<tr>"+cols.map(c=>`<td class="${c.num?"num":""}">${c.f?c.f(x):esc(c.v(x))}</td>`).join("")+"</tr>").join("")+"</tbody>";
+      "</tr></thead><tbody>"+r.map(x=>"<tr>"+cols.map(c=>{ const v=c.f?c.f(x):esc(c.v(x));
+      const nm=PP&&/^(Name|Author)$/.test(c.h)&&c.v(x)?`<span class="plink" data-name="${esc(c.v(x))}" data-inst="${esc(x.institution||(x.i&&INST.includes(x.i)?x.i:"")||opts.inst||"")}" title="Open profile">${v}</span>`:v;
+      return `<td class="${c.num?"num":""}">${nm}</td>`; }).join("")+"</tr>").join("")+"</tbody>";
     el.querySelectorAll("th").forEach(th=>th.onclick=()=>{const i=+th.dataset.i; if(i===sortI) asc=!asc; else {sortI=i; asc=false;} render();});
   }
   render();
@@ -1073,6 +1304,7 @@ function renderKpis(){
     [fmt(s.inter),"links between institutes",all?`${mx.inter_share_pct}% · ${fmt(Math.round(mx.inter_links_expected_total))} expected at random`:(s.links?(100*s.inter/s.links).toFixed(2)+"% of links":"–")],
     [fmt(s.copub),"co-published by two IIITs","papers listing two institutes"]];
   document.getElementById("ov-kpis").innerHTML=k.map(([v,l,d])=>`<div><b>${v??"–"}</b><span>${l}</span><small>${d}</small></div>`).join("");
+  countUp(document.getElementById("ov-kpis"));
 }
 function renderInstCards(){
   const S=Object.fromEntries(D.summary.map(s=>[s.institution,s]));
@@ -1212,7 +1444,7 @@ function renderInst(key){
     {h:"Top journal / venue",v:r=>r[10]},{h:"Active",v:r=>r[11],f:r=>r[11]+"–"+r[12]}];
   const q=document.getElementById("q-"+key), cb=document.getElementById("core-"+key);
   const upd=()=>{ const s=q.value.toLowerCase(); const rows=F.filter(r=>(!cb.checked||r[13])&&(!s||(r[0]+" "+r[1]+" "+r[10]).toLowerCase().includes(s)));
-    document.getElementById("n-"+key).textContent=rows.length+" authors"; table("t-fac-"+key,fcols,rows,{sort:7}); };
+    document.getElementById("n-"+key).textContent=rows.length+" authors"; table("t-fac-"+key,fcols,rows,{sort:7,inst:KEY2INST[key]}); };
   q.oninput=upd; cb.onchange=upd; upd();
   citedTable("t-cited-"+key, D.most_cited_inst[inst], false);
 }
@@ -1544,6 +1776,7 @@ function renderExplorer(){
     el.innerHTML=`<h4>${esc(d.n)}</h4><div><span class="swatch" style="background:${col(d.i)}"></span>${esc(d.i)}${d.dep?" · "+esc(d.dep):""}</div>
       <p style="margin-top:6px">${d.core?"Core faculty · ":""}${d.p} papers · ${d.dg} co-authors (full network) · betweenness ${d.b.toFixed(4)} · community C${d.cm}</p>
       ${d.x?`<p><b>${d.x}</b> co-author link(s) to another institute${d.mv?"; OpenAlex also places this author at a second institute":""}.</p>`:(d.mv?"<p>OpenAlex places this author at two institutes.</p>":"")}
+      ${PP?`<p><button class="btn pri" data-aid="${esc(d.id)}">Open full profile →</button></p>`:""}
       <p class="muted" style="margin-top:6px">Co-authors shown in this view (${ns.length}):</p>
       <ul>${ns.slice(0,40).map(o=>`<li>${o.x?"↔ ":""}${esc(o.n.n)} <span class="muted">${AB[o.n.i]} · ${o.w} paper${o.w>1?"s":""}</span></li>`).join("")}</ul>`;
   }
@@ -1776,6 +2009,320 @@ window.addEventListener("error",e=>{ const b=document.getElementById("errbar"); 
 if(typeof d3==="undefined"||typeof Chart==="undefined") document.getElementById("main").insertAdjacentHTML("afterbegin","<div class='warn'>Chart libraries failed to load; charts are unavailable.</div>");
 
 // ── Navigation & theme ─────────────────────────────────
+// ── People index: full co-authorship graph, profiles, search ───────────
+const PP = D.people;
+let PN = null;
+const norm = s => String(s||"").normalize("NFD").replace(/[\u0300-\u036f]/g,"").toLowerCase();
+function people(){
+  if(PN||!PP) return PN;
+  const n=PP.a.length, adj=Array.from({length:n},()=>[]);
+  for(let k=0;k<PP.e.length;k+=4){ const u=PP.e[k],v=PP.e[k+1],w=PP.e[k+2],y=PP.e[k+3]; adj[u].push([v,w,y]); adj[v].push([u,w,y]); }
+  const idx=Object.fromEntries(PP.ids.map((id,i)=>[id,i]));
+  const order=PP.a.map((p,i)=>i).sort((x,y)=>PP.a[y][5]-PP.a[x][5]), brank=new Int32Array(n); order.forEach((i,r)=>brank[i]=r+1);
+  PN={n,adj,idx,key:PP.a.map(p=>norm(p[0])),pkey:PP.p.map(p=>norm(p[0])),brank}; return PN;
+}
+const PI = i => { const p=PP.a[i]; return {i,name:p[0],inst:INST[p[1]],dep:p[2],papers:p[3],deg:p[4],b:p[5],cm:p[6],core:!!p[7],first:p[8],yr:p[9],top:p[10],mv:!!p[11]}; };
+const pcol = i => col(INST[PP.a[i][1]]);
+const pinitials = s => s.split(/\s+/).filter(Boolean).map(w=>w[0]).filter(c=>/\p{L}/u.test(c)).slice(0,2).join("").toUpperCase();
+function hilite(text, q){ const t=esc(text); const toks=norm(q).split(/\s+/).filter(x=>x.length>1); if(!toks.length) return t;
+  return t.replace(new RegExp("("+toks.map(x=>x.replace(/[.*+?^${}()|[\]\\]/g,"\\$&")).join("|")+")","gi"),"<mark>$1</mark>"); }
+function searchPeople(q, lim=8){
+  const N=people(); if(!N) return []; const s=norm(q).trim(); if(!s) return [];
+  const toks=s.split(/\s+/), r=[];
+  for(let i=0;i<N.n;i++){ const k=N.key[i];
+    if(toks.every(t=>k.includes(t))) r.push([i,(k===s?4:0)+(k.startsWith(s)?2:0)+(k.split(" ").some(w=>w.startsWith(toks[0]))?1:0)]); }
+  return r.sort((a,b)=>b[1]-a[1]||PP.a[b[0]][4]-PP.a[a[0]][4]).slice(0,lim).map(x=>x[0]);
+}
+function searchPapers(q, lim=6){
+  const N=people(); if(!N) return []; const toks=norm(q).trim().split(/\s+/).filter(Boolean); if(!toks.length) return [];
+  const r=[]; for(let i=0;i<N.pkey.length&&r.length<lim;i++) if(toks.every(t=>N.pkey[i].includes(t))) r.push(i);   // already most-cited first
+  return r;
+}
+const paperInsts = m => INST.filter((_,k)=>m&(1<<k));
+// breadth-first search; sig = number of distinct shortest paths
+function bfs(src){
+  const N=people(), d=new Int32Array(N.n).fill(-1), par=new Int32Array(N.n).fill(-1), sig=new Float64Array(N.n);
+  d[src]=0; sig[src]=1; const q=[src];
+  for(let h=0;h<q.length;h++){ const u=q[h]; for(const [v] of N.adj[u]){ if(d[v]<0){ d[v]=d[u]+1; par[v]=u; q.push(v); } if(d[v]===d[u]+1) sig[v]+=sig[u]; } }
+  return {d,par,sig,order:q};
+}
+
+// profile drawer
+const drawer=document.getElementById("drawer"), scrim=document.getElementById("scrim");
+let lastFocus=null;
+function openDrawer(html){
+  document.getElementById("dbody").innerHTML=html; lastFocus=document.activeElement;
+  drawer.classList.add("on"); scrim.classList.add("on"); drawer.setAttribute("aria-hidden","false"); drawer.scrollTop=0;
+  document.getElementById("dclose").focus({preventScroll:true});
+}
+function closeDrawer(){
+  if(!drawer.classList.contains("on")) return;
+  drawer.classList.remove("on"); scrim.classList.remove("on"); drawer.setAttribute("aria-hidden","true");
+  if(location.hash.startsWith("#author=")){ const cur=document.querySelector(".nav.on"); history.replaceState(null,"","#"+(cur?cur.dataset.p:"overview")); }
+  if(lastFocus&&lastFocus.focus) lastFocus.focus({preventScroll:true});
+}
+document.getElementById("dclose").onclick=closeDrawer; scrim.onclick=closeDrawer;
+function openProfile(i){
+  if(!PP||i==null||i<0) return; const N=people(), p=PI(i);
+  const co=N.adj[i].map(([v,w,y])=>({v,w,y,x:PP.a[v][1]!==PP.a[i][1]})).sort((a,b)=>b.x-a.x||b.w-a.w||PP.a[b.v][4]-PP.a[a.v][4]);
+  const xn=co.filter(c=>c.x).length, mx=Math.max(...p.yr,1), inEx=D.explorer&&D.explorer.nodes.some(n=>n.id===PP.ids[i]);
+  const same=N.key.reduce((c,k)=>c+(k===N.key[i]),0);
+  const spark=`<div class="spark">${p.yr.map((v,k)=>`<div title="${YEARS[k]}: ${v} paper${v===1?"":"s"}"><i style="height:${Math.round(100*v/mx)}%;opacity:${v?1:.25}"></i><small>${String(YEARS[k]).slice(2)}</small></div>`).join("")}</div>`;
+  history.replaceState(null,"","#author="+PP.ids[i]);
+  openDrawer(`<div class="dhead" style="--ic:${col(p.inst)}"><div class="avatar">${esc(pinitials(p.name))}</div><h2>${esc(p.name)}</h2>
+    <div class="dsub">${esc(p.inst)}${p.dep?" · "+esc(p.dep):""} · first paper here ${p.first}</div>
+    <div class="dbadges">${p.core?"<span>Core faculty</span>":""}${xn?`<span>Bridge · ${xn} link${xn>1?"s":""} to another IIIT</span>`:""}${p.mv?"<span>Listed at two IIITs</span>":""}${N.brank[i]<=40?"<span>Top-40 broker</span>":""}</div></div>
+  <div class="dbody" style="--ic:${col(p.inst)}">
+    <div class="dkpi"><div><b>${p.papers}</b><span>papers 2016–26</span></div><div><b>${p.deg}</b><span>co-authors at the IIITs</span></div>
+      <div><b>#${N.brank[i].toLocaleString()}</b><span>betweenness rank of ${N.n.toLocaleString()}</span></div><div><b>C${p.cm}</b><span>Louvain community</span></div></div>
+    <h4>Papers per year</h4>${spark}
+    <h4>Co-authors at the three IIITs (${co.length})</h4>
+    <div class="chips">${co.slice(0,24).map(c=>`<button class="chip${c.x?" x":""}" data-pi="${c.v}" title="${c.w} joint paper${c.w>1?"s":""}, first in ${YEARS[0]+c.y}"><span class="swatch" style="background:${pcol(c.v)}"></span>${esc(PP.a[c.v][0])} <small>${c.w}</small></button>`).join("")||"<p class='muted'>No co-authors at the three IIITs.</p>"}</div>
+    <p class="muted" style="font-size:12px;margin-top:6px">${co.length>24?`+ ${co.length-24} more · `:""}pink outline = co-author at another IIIT · number = joint papers</p>
+    <h4>Most-cited papers here</h4>
+    <ol class="dpubs">${p.top.map(k=>{const q=PP.p[k]; return `<li>${q[3]?`<a href="https://doi.org/${esc(q[3])}" target="_blank" rel="noopener">${esc(q[0])}</a>`:esc(q[0])}<span>${q[1]}${q[4]?" · "+esc(q[4]):""} · ${fmt(q[2])} citations</span></li>`;}).join("")}</ol>
+    ${same>1?`<p class="muted" style="font-size:12px">${same} different OpenAlex authors share this name; this profile is ${esc(PP.ids[i])}.</p>`:""}
+    <div class="dact"><button class="btn pri" data-act="path" data-i="${i}">Find a path from here</button>
+      ${inEx?`<button class="btn" data-act="ex" data-i="${i}">Show in network explorer</button>`:""}
+      <a class="btn" href="https://openalex.org/${esc(PP.ids[i])}" target="_blank" rel="noopener">OpenAlex ↗</a></div>
+  </div>`);
+}
+function openByName(name, inst){
+  const N=people(); if(!N) return; const k=norm(name);
+  let c=[]; for(let i=0;i<N.n;i++) if(N.key[i]===k) c.push(i);
+  if(inst&&c.length>1){ const f=c.filter(i=>INST[PP.a[i][1]]===inst); if(f.length) c=f; }
+  if(c.length===1) return openProfile(c[0]);
+  if(!c.length) c=searchPeople(name,8);
+  if(!c.length) return;
+  c.sort((a,b)=>PP.a[b][4]-PP.a[a][4]);
+  openDrawer(`<div class="dhead" style="--ic:var(--accent)"><h2>${esc(name)}</h2><div class="dsub">${c.length} OpenAlex authors match. Pick one.</div></div>
+    <div class="dbody dchoose">${c.map(i=>`<button class="btn" data-pi="${i}"><span class="swatch" style="background:${pcol(i)}"></span><b>${esc(PP.a[i][0])}</b> · ${AB[INST[PP.a[i][1]]]} · ${PP.a[i][3]} papers · ${PP.a[i][4]} co-authors${PP.a[i][2]?" · "+esc(PP.a[i][2]):""}</button>`).join("")}</div>`);
+}
+document.addEventListener("click",e=>{
+  const act=e.target.closest("[data-act]");
+  if(act){ const i=+act.dataset.i; closeDrawer();
+    if(act.dataset.act==="path"){ PATH.a=i; if(PATH.b===i) PATH.b=null; show("paths"); syncPickers(true); }
+    else if(act.dataset.act==="ex"){ show("explorer"); const q=document.getElementById("ex-q"); q.value=PP.a[i][0]; q.dispatchEvent(new Event("input")); }
+    return; }
+  const pl=e.target.closest(".plink"); if(pl){ openByName(pl.dataset.name, pl.dataset.inst); return; }
+  const c=e.target.closest("[data-pi]"); if(c&&!c.closest(".pk-list")){ openProfile(+c.dataset.pi); return; }
+  const a=e.target.closest("[data-aid]"); if(a){ const N=people(); if(N&&N.idx[a.dataset.aid]!=null) openProfile(N.idx[a.dataset.aid]); }
+});
+
+// command palette (Ctrl/Cmd+K or "/")
+const cmdk=document.getElementById("cmdk"), cq=document.getElementById("cmdk-q"), cres=document.getElementById("cmdk-res");
+let citems=[], csel=0;
+function cmdkOpen(){ cmdk.hidden=false; cq.value=""; cmdkRender(); setTimeout(()=>cq.focus(),10); }
+function cmdkClose(){ cmdk.hidden=true; }
+function cmdkRender(){
+  const q=cq.value.trim();
+  const pages=[...document.querySelectorAll("#side .nav")].map(b=>({p:b.dataset.p,t:[...b.childNodes].filter(n=>n.nodeType===3).map(n=>n.textContent).join("").trim(),c:b.querySelector(".dot")?.style.background}));
+  citems=[]; let h="";
+  const grp=(title,list)=>{ if(!list.length) return; h+=`<div class="cmdk-g">${title}</div>`; list.forEach(it=>{ h+=`<div class="cmdk-it" data-k="${citems.length}" role="option">${it.html}</div>`; citems.push(it); }); };
+  if(q&&PP){
+    grp("Authors",searchPeople(q,7).map(i=>({run:()=>openProfile(i),html:`<span class="swatch" style="background:${pcol(i)}"></span><span class="t">${hilite(PP.a[i][0],q)}</span><small>${AB[INST[PP.a[i][1]]]} · ${PP.a[i][3]} paper${PP.a[i][3]===1?"":"s"} · ${PP.a[i][4]} co-author${PP.a[i][4]===1?"":"s"}</small>`})));
+    grp("Papers",searchPapers(q,6).map(k=>{const p=PP.p[k], ins=paperInsts(p[5]); return {run:()=>{ if(p[3]) window.open("https://doi.org/"+p[3],"_blank","noopener"); },
+      html:`<span class="swatch" style="background:${col(ins[0])}"></span><span class="t">${hilite(p[0],q)}</span><small>${p[1]} · ${fmt(p[2])} cit. · ${ins.map(x=>AB[x]).join("+")}${p[3]?" ↗":""}</small>`};}));
+  }
+  const pg=(q?pages.filter(x=>norm(x.t).includes(norm(q))):pages).slice(0,q?5:30);
+  grp(q?"Pages":"Jump to a page",pg.map(x=>({run:()=>show(x.p),html:`<span class="swatch" style="background:${x.c||"var(--muted)"}"></span><span class="t">${hilite(x.t,q)}</span><small>page</small>`})));
+  if(!citems.length) h=`<p class="muted" style="padding:16px">Nothing matches “${esc(q)}”.</p>`;
+  cres.innerHTML=h; csel=0; cmdkMark();
+}
+function cmdkMark(){ cres.querySelectorAll(".cmdk-it").forEach(el=>el.classList.toggle("on",+el.dataset.k===csel)); const on=cres.querySelector(".cmdk-it.on"); if(on) on.scrollIntoView({block:"nearest"}); }
+cq.oninput=cmdkRender;
+cq.onkeydown=e=>{ if(e.key==="ArrowDown"){ csel=Math.min(csel+1,citems.length-1); cmdkMark(); e.preventDefault(); }
+  else if(e.key==="ArrowUp"){ csel=Math.max(csel-1,0); cmdkMark(); e.preventDefault(); }
+  else if(e.key==="Enter"&&citems[csel]){ const it=citems[csel]; cmdkClose(); it.run(); } };
+cres.onclick=e=>{ const el=e.target.closest(".cmdk-it"); if(el){ const it=citems[+el.dataset.k]; cmdkClose(); it.run(); } };
+cres.onmousemove=e=>{ const el=e.target.closest(".cmdk-it"); if(el&&+el.dataset.k!==csel){ csel=+el.dataset.k; cmdkMark(); } };
+cmdk.onclick=e=>{ if(e.target===cmdk) cmdkClose(); };
+document.getElementById("srchbtn").onclick=cmdkOpen;
+document.addEventListener("keydown",e=>{
+  if((e.ctrlKey||e.metaKey)&&e.key.toLowerCase()==="k"){ e.preventDefault(); cmdk.hidden?cmdkOpen():cmdkClose(); return; }
+  if(e.key==="Escape"){ if(!cmdk.hidden) cmdkClose(); else closeDrawer(); return; }
+  if(e.key==="/"&&cmdk.hidden&&!/INPUT|TEXTAREA|SELECT/.test(document.activeElement.tagName)){ e.preventDefault(); cmdkOpen(); }
+});
+
+// count-up animation for headline numbers
+function countUp(root){
+  if(!root||matchMedia("(prefers-reduced-motion: reduce)").matches) return;
+  root.querySelectorAll("b").forEach(b=>{
+    const m=b.textContent.trim().match(/^([\d,]+)(\.\d+)?(%?)$/); if(!m) return;
+    const target=parseFloat((m[1]+(m[2]||"")).replace(/,/g,"")), dec=m[2]?m[2].length-1:0, t0=performance.now(), T=750;
+    const step=t=>{ const k=Math.min(1,Math.max(0,(t-t0)/T)), e=1-Math.pow(1-k,3), v=target*e;
+      b.textContent=(dec?v.toFixed(dec):Math.round(v).toLocaleString())+m[3]; if(k<1) requestAnimationFrame(step); };
+    const final=b.textContent; requestAnimationFrame(step); setTimeout(()=>{ b.textContent=final; },T+150);
+  });
+}
+
+// ── Degrees of separation ──────────────────────────────
+const PATH={a:null,b:null};
+let syncPickers=()=>{};
+function renderPaths(){
+  const out=document.getElementById("path-out");
+  if(!PP){ out.innerHTML="<p class='muted'>Author data unavailable.</p>"; return; }
+  const N=people();
+  function picker(id, slot){
+    const box=document.getElementById(id), inp=box.querySelector("input"), list=box.querySelector(".pk-list"); let res=[], s=0;
+    const paint=()=>{ list.innerHTML=res.map((i,k)=>`<button type="button" class="${k===s?"on":""}" data-pi="${i}"><span class="swatch" style="background:${pcol(i)}"></span>${hilite(PP.a[i][0],inp.value)}<small>${AB[INST[PP.a[i][1]]]} · ${PP.a[i][4]} co-auth.</small></button>`).join(""); list.classList.toggle("on",res.length>0); };
+    inp.oninput=()=>{ res=searchPeople(inp.value,8); s=0; paint(); };
+    inp.onkeydown=e=>{ if(e.key==="ArrowDown"){ s=Math.min(s+1,res.length-1); paint(); e.preventDefault(); } else if(e.key==="ArrowUp"){ s=Math.max(s-1,0); paint(); e.preventDefault(); }
+      else if(e.key==="Enter"&&res[s]!=null){ pick(res[s]); } else if(e.key==="Escape"){ list.classList.remove("on"); e.stopPropagation(); } };
+    inp.onblur=()=>setTimeout(()=>list.classList.remove("on"),150);
+    list.onmousedown=e=>{ const b=e.target.closest("[data-pi]"); if(b){ e.preventDefault(); pick(+b.dataset.pi); } };
+    function pick(i){ PATH[slot]=i; list.classList.remove("on"); set(); run(); }
+    function set(){ const i=PATH[slot]; inp.value=i==null?"":PP.a[i][0]; box.classList.toggle("set",i!=null); if(i!=null) box.style.setProperty("--pc",pcol(i)); }
+    return set;
+  }
+  const setA=picker("pk-a","a"), setB=picker("pk-b","b");
+  syncPickers=go=>{ setA(); setB(); if(go) run(); };
+  document.getElementById("pk-swap").onclick=()=>{ [PATH.a,PATH.b]=[PATH.b,PATH.a]; syncPickers(true); };
+  const hub=PP.a.reduce((m,p,i)=>p[4]>PP.a[m][4]?i:m,0), inGiant=bfs(hub).d;
+  function randomPair(cross){
+    const pool=k=>PP.a.map((p,i)=>i).filter(i=>PP.a[i][1]===k&&PP.a[i][4]>=2&&inGiant[i]>=0);
+    const ia=Math.floor(Math.random()*3), ib=cross?(ia+1+Math.floor(Math.random()*2))%3:ia;
+    const A_=pool(ia), B_=pool(ib); PATH.a=A_[Math.floor(Math.random()*A_.length)];
+    do{ PATH.b=B_[Math.floor(Math.random()*B_.length)]; }while(PATH.b===PATH.a);
+    syncPickers(true);
+  }
+  document.getElementById("pk-rand").onclick=()=>randomPair(true);
+  document.getElementById("pk-rand2").onclick=()=>randomPair(false);
+  function run(){
+    const a=PATH.a, b=PATH.b, read=document.getElementById("path-read");
+    if(a==null){ out.innerHTML=""; read.innerHTML="<p class='muted'>Pick two authors.</p>"; return; }
+    const r=bfs(a), reach=r.order.length-1;
+    let md=0; for(const v of r.order) md+=r.d[v]; md=reach?md/reach:0;
+    distChart(a,r);
+    if(b==null){ out.innerHTML=`<p class="muted" style="margin-top:14px">Now pick a second author.</p>`;
+      read.innerHTML=`<p><b>${esc(PP.a[a][0])}</b> can reach <b>${reach.toLocaleString()}</b> of the ${N.n.toLocaleString()} authors through co-authors, on average <b>${md.toFixed(2)}</b> steps away.</p>`; return; }
+    const co=ST.coauthorship||{};
+    if(r.d[b]<0){
+      out.innerHTML=`<div class="pathhead"><span class="big">∞</span><span>No chain of co-authors links these two authors.</span></div><p class="muted">They sit in different connected components: nobody at the three IIITs has written with people on both sides.</p>`;
+      read.innerHTML=`<p>${esc(PP.a[b][0])} is outside the component of ${esc(PP.a[a][0])}, which has ${(reach+1).toLocaleString()} authors.${co.giant_share_pct?` The largest component holds ${co.giant_share_pct}% of all authors; the rest are small separate groups and ${fmt(co.isolated_nodes)} authors with no co-author here.`:""}</p>`; return; }
+    const path=[]; for(let v=b;v!==-1;v=r.par[v]) path.unshift(v);
+    const edge=(u,v)=>(N.adj[u].find(x=>x[0]===v)||[v,1,0]);
+    let h=""; const crossings=[];
+    path.forEach((v,k)=>{
+      if(k){ const u=path[k-1], e=edge(u,v), x=PP.a[u][1]!==PP.a[v][1]; if(x) crossings.push([u,v]);
+        h+=`<div class="phop${x?" x":""}" style="animation-delay:${k*90-45}ms"><span>${e[1]} paper${e[1]>1?"s":""}</span><i>→</i><span>${x?"crosses":"since '"+String(YEARS[0]+e[2]).slice(2)}</span></div>`; }
+      h+=`<div class="pnode" data-pi="${v}" style="--pc:${pcol(v)};animation-delay:${k*90}ms"><b>${esc(PP.a[v][0])}</b><small>${AB[INST[PP.a[v][1]]]}${PP.a[v][2]?" · "+esc(PP.a[v][2]):""}</small></div>`;
+    });
+    const k=path.length-1, sig=r.sig[b];
+    out.innerHTML=`<div class="pathhead"><span class="big">${k}</span><span><b>degree${k>1?"s":""} of separation</b> · ${sig>1?`one of <b>${sig>=1e6?sig.toExponential(1):Math.round(sig).toLocaleString()}</b> equally short chains`:"the only shortest chain"}</span></div>
+      <div class="chain">${h}</div><p class="hint">Click anyone to open their profile. Under each arrow: joint papers, and the year the pair first published together.</p>`;
+    const mix=ST.mixing||{};
+    read.innerHTML=`<p><b>${esc(PP.a[a][0])}</b> and <b>${esc(PP.a[b][0])}</b> are ${k} handshake${k>1?"s":""} apart${co.giant_avg_path_length?`; the average for two authors in the giant component is <b>${co.giant_avg_path_length}</b>`:""}.</p>`+
+      (crossings.length?`<p>The chain crosses between institutes ${crossings.length} time${crossings.length>1?"s":""}: ${crossings.map(([u,v])=>`<b>${esc(PP.a[u][0])}</b> (${AB[INST[PP.a[u][1]]]}) → <b>${esc(PP.a[v][0])}</b> (${AB[INST[PP.a[v][1]]]})`).join("; ")}. Only ${fmt(mix.inter_links_total??138)} of ${fmt(co.edges??8667)} links make such a jump, so chains between institutes keep running through the same few bridge authors.</p>`
+        :`<p>The whole chain stays inside ${esc(INST[PP.a[a][1]])}.</p>`)+
+      `<p>${esc(PP.a[a][0])} reaches ${reach.toLocaleString()} authors, on average ${md.toFixed(2)} steps away. ${sig>1?"With several equally short chains, the one shown is the first the search finds.":"With a single shortest chain, removing anyone in the middle makes the two authors further apart."}</p>`;
+  }
+  function distChart(a,r){
+    document.getElementById("dist-who").textContent=PP.a[a][0];
+    let mx=0; for(const v of r.order) mx=Math.max(mx,r.d[v]);
+    const L=Array.from({length:mx},(_,k)=>k+1), cnt=INST.map(()=>new Array(mx).fill(0));
+    for(const v of r.order) if(r.d[v]>0) cnt[PP.a[v][1]][r.d[v]-1]++;
+    chart("c-dist",{type:"bar",data:{labels:L,datasets:INST.map((n,k)=>({label:AB[n],data:cnt[k],backgroundColor:col(n),borderRadius:3}))},
+      options:baseOpts({plugins:{tooltip:{callbacks:{title:t=>t[0].label+" step"+(t[0].label==="1"?"":"s")+" away"}}},
+        scales:{x:{stacked:true,title:{display:true,text:"co-authorship distance (steps)",color:css("--muted")}},y:{stacked:true,title:{display:true,text:"authors",color:css("--muted")}}}})});
+  }
+  if(PATH.a==null){ // first view: the best-connected authors of the first and last institute
+    const best=k=>PP.a.reduce((m,p,i)=>p[1]===k&&(m<0||p[4]>PP.a[m][4])?i:m,-1);
+    PATH.a=best(0); PATH.b=best(INST.length-1);
+  }
+  syncPickers(true);
+}
+
+// ── Network growth ─────────────────────────────────────
+let GRPOS=null, GRTOKEN=0;
+function renderGrowth(){
+  const host=document.getElementById("gr-net"), cv=host.querySelector("canvas"), load=document.getElementById("gr-load");
+  if(!PP){ host.innerHTML="<p style='padding:16px;color:#cbd5e1'>Author data unavailable.</p>"; return; }
+  const token=++GRTOKEN, G=PP.grow, Y0=YEARS[0], Y1=YEARS[YEARS.length-1];
+  const W=host.clientWidth, H=host.clientHeight, dpr=window.devicePixelRatio||1;
+  cv.width=W*dpr; cv.height=H*dpr; const ctx=cv.getContext("2d");
+  const nodes=PP.a.map((p,i)=>({index:i,r:1.3+Math.sqrt(p[4])*.5,k:p[1],f:p[8]}));
+  const links=[]; for(let k=0;k<PP.e.length;k+=4) links.push({source:PP.e[k],target:PP.e[k+1],y:Y0+PP.e[k+3],x:PP.a[PP.e[k]][1]!==PP.a[PP.e[k+1]][1]});
+  const cols=INST.map(n=>col(n)), pink=css("--s5");
+  let year=+document.getElementById("gr-y").value, tf=d3.zoomIdentity, fit=d3.zoomIdentity, hover=-1;
+  function fitTo(){ // frame the central 98% of authors so a few stray pairs do not shrink the picture
+    const xs=nodes.map(n=>n.x).sort((a,b)=>a-b), ys=nodes.map(n=>n.y).sort((a,b)=>a-b), q=p=>Math.floor(p*(xs.length-1));
+    const x0=xs[q(.01)],x1=xs[q(.99)],y0=ys[q(.01)],y1=ys[q(.99)];
+    const k=.95*Math.min(W/(x1-x0||1),H/(y1-y0||1)); return d3.zoomIdentity.translate(W/2-k*(x0+x1)/2,H/2-k*(y0+y1)/2).scale(k); }
+  function draw(){
+    const hl=document.getElementById("gr-new").checked;
+    ctx.setTransform(dpr,0,0,dpr,0,0); ctx.clearRect(0,0,W,H);
+    ctx.save(); ctx.translate(tf.x,tf.y); ctx.scale(tf.k,tf.k);
+    const lw=1/tf.k, old=new Path2D(), fresh=new Path2D(), cross=new Path2D();
+    for(const l of links){ if(l.y>year) continue; const p=(l.x?cross:(hl&&l.y===year?fresh:old)); p.moveTo(l.source.x,l.source.y); p.lineTo(l.target.x,l.target.y); }
+    ctx.lineWidth=.6*lw; ctx.strokeStyle="rgba(148,163,184,.18)"; ctx.stroke(old);
+    ctx.lineWidth=.9*lw; ctx.strokeStyle="rgba(253,224,71,.75)"; ctx.stroke(fresh);
+    ctx.lineWidth=1.6*lw; ctx.strokeStyle=pink; ctx.stroke(cross);
+    for(let k=0;k<INST.length;k++){ const p=new Path2D(); for(const n of nodes) if(n.k===k&&n.f<=year){ const r=Math.max(n.r,1.4/tf.k); p.moveTo(n.x+r,n.y); p.arc(n.x,n.y,r,0,7); } ctx.fillStyle=cols[k]; ctx.fill(p); }
+    if(hl){ ctx.lineWidth=1.2*lw; ctx.strokeStyle="#fde047"; const p=new Path2D(); for(const n of nodes) if(n.f===year){ const r=n.r+1.5*lw; p.moveTo(n.x+r,n.y); p.arc(n.x,n.y,r,0,7); } ctx.stroke(p); }
+    if(hover>=0){ const n=nodes[hover]; ctx.lineWidth=2*lw; ctx.strokeStyle="#fff"; ctx.beginPath(); ctx.arc(n.x,n.y,n.r+3*lw,0,7); ctx.stroke(); }
+    ctx.restore();
+  }
+  function stats(){
+    const g=G[year-Y0], p=G[year-Y0-1];
+    const d=(a,b)=>b==null?"":`<em>+${(a-b).toLocaleString()}</em>`;
+    document.getElementById("gr-yl").textContent=year;
+    document.getElementById("gr-stats").innerHTML=
+      `<div><b>${g.authors.toLocaleString()}</b><span>authors so far</span>${d(g.authors,p&&p.authors)}</div>`+
+      `<div><b>${g.links.toLocaleString()}</b><span>co-author links</span>${d(g.links,p&&p.links)}</div>`+
+      `<div><b style="color:${pink}">${g.cross}</b><span>links between IIITs</span>${d(g.cross,p&&p.cross)}</div>`+
+      `<div><b>${(100*g.giant/Math.max(g.authors,1)).toFixed(1)}%</b><span>in the giant component</span></div>`+
+      `<div><b>${g.components.toLocaleString()}</b><span>separate clusters</span></div>`;
+  }
+  document.getElementById("leg-gr").innerHTML=INST.map((n,k)=>`<span><span class="swatch" style="background:${cols[k]}"></span>${n}</span>`).join("")+
+    `<span><span class="swatch" style="background:${pink}"></span>link between institutes</span><span><span class="swatch" style="background:#fde047"></span>formed this year (ring = first paper)</span>`;
+  const sl=document.getElementById("gr-y");
+  sl.oninput=()=>{ year=+sl.value; stats(); draw(); };
+  document.getElementById("gr-new").onchange=draw;
+  let timer=null; const pb=document.getElementById("gr-play");
+  const stop=()=>{ clearInterval(timer); timer=null; pb.textContent="▶ Play"; };
+  pb.onclick=()=>{ if(timer) return stop(); if(year>=Y1) year=Y0-1; pb.textContent="❚❚ Pause";
+    const tick=()=>{ if(token!==GRTOKEN||!document.getElementById("p-growth").classList.contains("on")) return stop();
+      year++; sl.value=year; stats(); draw(); if(year>=Y1) stop(); };
+    tick(); timer=setInterval(tick,1100); };
+  let qt=null;
+  const zoom=d3.zoom().scaleExtent([.3,14]).on("zoom",e=>{ tf=e.transform; draw(); });
+  function ready(){
+    load.style.opacity=0; setTimeout(()=>load.style.display="none",400);
+    qt=d3.quadtree(nodes,d=>d.x,d=>d.y);
+    d3.select(cv).call(zoom).call(zoom.transform,fit);
+    cv.onmousemove=e=>{ const rc=cv.getBoundingClientRect(), [x,y]=tf.invert([e.clientX-rc.left,e.clientY-rc.top]);
+      const n=qt.find(x,y,8/tf.k), i=n&&n.f<=year?n.index:-1;
+      if(i!==hover){ hover=i; draw(); }
+      if(i>=0){ const p=PP.a[i]; cv.style.cursor="pointer"; showTip(e,`<b>${esc(p[0])}</b>${esc(INST[p[1]])}<br>first paper ${p[8]} · ${p[4]} co-authors · ${p[3]} papers`); }
+      else { cv.style.cursor="grab"; hideTip(); } };
+    cv.onmouseleave=()=>{ if(hover>=0){ hover=-1; draw(); } hideTip(); };
+    cv.onclick=()=>{ if(hover>=0) openProfile(hover); };
+  }
+  stats();
+  if(GRPOS){ nodes.forEach((n,i)=>{ n.x=GRPOS[2*i]; n.y=GRPOS[2*i+1]; }); links.forEach(l=>{ l.source=nodes[l.source]; l.target=nodes[l.target]; });
+    fit=fitTo(); tf=fit; draw(); ready(); }
+  else {
+    const sim=d3.forceSimulation(nodes).force("link",d3.forceLink(links).distance(l=>l.x?40:12).strength(.5))
+      .force("charge",d3.forceManyBody().strength(-7).theta(1.2).distanceMax(260))
+      .force("x",d3.forceX(0).strength(.06)).force("y",d3.forceY(0).strength(.06)).stop();
+    const T=240; let t=0; const bar=load.querySelector(".bar i");
+    const step=()=>{ if(token!==GRTOKEN) return; const t1=performance.now(); while(t<T&&performance.now()-t1<30){ sim.tick(); t++; }
+      fit=fitTo(); tf=fit; draw(); bar.style.width=(100*t/T)+"%";
+      if(t<T) requestAnimationFrame(step); else { GRPOS=new Float32Array(nodes.length*2); nodes.forEach((n,i)=>{GRPOS[2*i]=n.x;GRPOS[2*i+1]=n.y;}); ready(); } };
+    requestAnimationFrame(step);
+  }
+  const yl=G.map(g=>g.year);
+  chart("c-gr-giant",{type:"line",data:{labels:yl,datasets:[
+      {label:"in giant component (%)",data:G.map(g=>+(100*g.giant/Math.max(g.authors,1)).toFixed(1)),borderColor:css("--s3"),backgroundColor:css("--s3")+"33",fill:true,tension:.3,yAxisID:"y"},
+      {label:"separate clusters",data:G.map(g=>g.components),borderColor:css("--muted"),borderDash:[4,4],pointRadius:2,tension:.3,yAxisID:"y1"}]},
+    options:baseOpts({scales:{y:{max:100,title:{display:true,text:"% of authors",color:css("--muted")}},y1:{position:"right",grid:{display:false},ticks:{color:css("--text-2")},beginAtZero:true,title:{display:true,text:"clusters",color:css("--muted")}}}})});
+  chart("c-gr-cross",{data:{labels:yl,datasets:[
+      {type:"bar",label:"links between IIITs",data:G.map(g=>g.cross),backgroundColor:pink,borderRadius:4,yAxisID:"y"},
+      {type:"line",label:"share of all links (%)",data:G.map(g=>+(100*g.cross/Math.max(g.links,1)).toFixed(2)),borderColor:css("--accent"),tension:.3,yAxisID:"y1"}]},
+    options:baseOpts({scales:{y:{title:{display:true,text:"links",color:css("--muted")}},y1:{position:"right",grid:{display:false},ticks:{color:css("--text-2")},beginAtZero:true,title:{display:true,text:"% of links",color:css("--muted")}}}})});
+}
+
 const rendered={};
 function show(p){
   document.querySelectorAll(".page").forEach(x=>x.classList.toggle("on",x.id==="p-"+p));
@@ -1786,7 +2333,9 @@ function show(p){
     else if(p==="india") renderIndia(); else if(p==="method") renderMethod(); else if(p==="compare") renderCompare();
     else if(p==="explorer") renderExplorer(); else if(p==="course") renderCourse();
     else if(p==="pubs") renderPubsPage(); else if(p==="faculty") renderFaculty();
-    else if(p==="graphx") renderGraphx(); else if(p==="audit") renderAudit(); else renderInst(p); }
+    else if(p==="graphx") renderGraphx(); else if(p==="audit") renderAudit();
+    else if(p==="paths") renderPaths(); else if(p==="growth") renderGrowth(); else renderInst(p); }
+  if(!location.hash.startsWith("#author=")) history.replaceState(null,"","#"+p);
   if(["graphx","audit"].includes(p)) setAdv(true);
   try{ localStorage.setItem("g10-page",p); }catch(e){}
 }
@@ -1803,9 +2352,13 @@ document.getElementById("themebtn").onclick=()=>{
 };
 try{ const t=localStorage.getItem("g10-theme"); if(t) document.documentElement.dataset.theme=t; }catch(e){}
 let start="overview"; try{ start=localStorage.getItem("g10-page")||"overview"; }catch(e){}
-if(location.hash.length>1) start=location.hash.slice(1);
+const H0=location.hash.slice(1);
+if(H0&&!H0.startsWith("author=")) start=H0;
 show(document.getElementById("p-"+start)?start:"overview");
-window.addEventListener("hashchange",()=>{ const p=location.hash.slice(1); if(document.getElementById("p-"+p)) show(p); });
+if(H0.startsWith("author=")&&PP){ const i=people().idx[H0.slice(7)]; if(i!=null) openProfile(i); }
+window.addEventListener("hashchange",()=>{ const p=location.hash.slice(1);
+  if(p.startsWith("author=")){ const N=people(); if(N&&N.idx[p.slice(7)]!=null) openProfile(N.idx[p.slice(7)]); }
+  else if(document.getElementById("p-"+p)) show(p); });
 """
 
 
@@ -1817,7 +2370,10 @@ def build_html(D):
                     .replace("%ROR%", C.INSTITUTIONS[i][1])
                     for n, (i, k) in enumerate(KEYS.items()))
     body = (BODY.replace("%INSTNAV%", nav).replace("%INSTPAGES%", pages)
-            .replace("%CITEN%", str(CITE_GRAPH_NODES)).replace("%EXPN%", str(EXPLORER_PER_INST)))
+            .replace("%CITEN%", str(CITE_GRAPH_NODES)).replace("%EXPN%", str(EXPLORER_PER_INST))
+            .replace("%NPEOPLE%", f"{len((D.get('people') or {}).get('a', [])):,}")
+            .replace("%NPAPERS%", f"{len((D.get('people') or {}).get('p', [])):,}")
+            .replace("%Y0%", str(C.START_YEAR)).replace("%Y1%", str(C.END_YEAR)))
     data = json.dumps(D, ensure_ascii=False,
                       default=lambda v: v.item() if hasattr(v, "item") else str(v)).replace("</", "<\\/")
     return f"""<!DOCTYPE html>
