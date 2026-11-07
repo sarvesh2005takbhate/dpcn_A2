@@ -41,7 +41,10 @@ LIBS = {
     "assets/d3.min.js": "https://cdnjs.cloudflare.com/ajax/libs/d3/7.8.5/d3.min.js",
     "assets/chart.umd.min.js": "https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js",
 }
-KEYS = {"IIIT Allahabad": "iiita", "ABV-IIITM Gwalior": "abv", "IIIT Bangalore": "iiitb"}
+KEYS = {"IIIT Allahabad": "iiita", "ABV-IIITM Gwalior": "abv", "IIIT Bangalore": "iiitb",
+        "IIIT Hyderabad": "iiith", "IIIT Delhi": "iiitd"}
+# CSS categorical slot per institute (slot 5, magenta, stays reserved for links between institutes)
+INST_SLOT = {"IIIT Allahabad": 1, "ABV-IIITM Gwalior": 2, "IIIT Bangalore": 3, "IIIT Hyderabad": 4, "IIIT Delhi": 7}
 CITE_GRAPH_NODES = 220
 EXPLORER_PER_INST = 110
 PEOPLE_TOP_PAPERS = 5        # most-cited papers listed on each author profile
@@ -83,7 +86,7 @@ def citations_by_year(df, years):
 
 
 def partner_cards(indian, n=14):
-    """Indian partner institutions with the most papers co-authored with the three IIITs."""
+    """Indian partner institutions with the most papers co-authored with the five IIITs."""
     if indian.empty:
         return []
     ind = indian[~indian["intra_group"].astype(str).str.upper().eq("TRUE")].copy()
@@ -101,7 +104,7 @@ def partner_cards(indian, n=14):
 
 
 def publication_list(df, n=10):
-    """Most-cited papers with their full author list; authors of the three
+    """Most-cited papers with their full author list; authors of the five
     institutes are flagged so the page can highlight them."""
     s = df.sort_values("citations", ascending=False)
     out = []
@@ -193,6 +196,7 @@ def faculty_records(fac, adf, years, min_papers=3):
                     "cit": int(r.citations), "h": int(r.h_index),
                     "hl": None if pd.isna(r.h_index_lifetime_openalex) else int(r.h_index_lifetime_openalex),
                     "top": r.top_journal, "fy": int(r.first_year), "ly": int(r.last_year),
+                    "role": r.role, "if5": int(r.if_gt5_papers), "if10": int(r.if_gt10_papers),
                     "yrs": [int(yc.get(k + (y,), 0)) for y in years],
                     "q": [int(qc.get(k + (q,), 0)) for q in ["Q1", "Q2", "Q3", "Q4", "Unranked"]]})
     return sorted(out, key=lambda r: -r["cit"])
@@ -329,7 +333,7 @@ def explorer_graph(o, nd):
 
 
 def people_network(o, df):
-    """Every author at the three IIITs plus the FULL co-authorship graph (same
+    """Every author at the five IIITs plus the FULL co-authorship graph (same
     edges as part5b: same_institution + inter_group). Feeds the author profiles,
     the site-wide search, the 'degrees of separation' path finder and the
     year-by-year growth view. Edge year = year of the pair's first joint paper."""
@@ -392,7 +396,7 @@ def people_network(o, df):
     # e: flat [u, v, joint papers, first joint year - START_YEAR, ...]
     return {"ids": ids, "a": people, "e": [x for r in e[["u", "v", "w", "y"]].itertuples(index=False)
                                            for x in (int(r.u), int(r.v), int(r.w), int(r.y) - C.START_YEAR)],
-            # paper: [title, year, citations, doi, venue, bitmask of the three institutes]
+            # paper: [title, year, citations, doi, venue, bitmask of the five institutes]
             "p": [[txt(r.title, 110), int(r.year), int(r.citations), C.normalize_doi(r.doi) or "",
                    txt(r.journal_name, 60), int(mask.get(w, 0))] for w, r in papers.iterrows()],
             "grow": grow}
@@ -409,7 +413,8 @@ def build_data(o):
                   "colors_dark": C.INST_COLORS_DARK, "years": years, "partial_year": C.PARTIAL_YEAR,
                   "generated": date.today().isoformat(), "full_names": C.INST_FULL_NAMES,
                   "ror": {k: v[1] for k, v in C.INSTITUTIONS.items()},
-                  "openalex": {k: v[0] for k, v in C.INSTITUTIONS.items()}}}
+                  "openalex": {k: v[0] for k, v in C.INSTITUTIONS.items()},
+                  "abbr": C.INST_ABBR, "slots": {k: f"--s{v}" for k, v in INST_SLOT.items()}}}
     D["summary"] = records(A.institution_summary(df, fac))
 
     tr = A.publication_trend(df, by_type=True)
@@ -434,7 +439,9 @@ def build_data(o):
     D["faculty"] = {i: [[r.name, r.department, r.department_source.startswith("inferred"), int(r.papers),
                          int(r.journal_papers), int(r.conference_papers), int(r.q1_papers), int(r.citations),
                          int(r.h_index), None if pd.isna(r.h_index_lifetime_openalex) else int(r.h_index_lifetime_openalex),
-                         r.top_journal, int(r.first_year), int(r.last_year), bool(r.is_core_faculty)]
+                         r.top_journal, int(r.first_year), int(r.last_year), bool(r.is_core_faculty),
+                         r.role, int(r.q2_papers), int(r.q3_papers), int(r.q4_papers),
+                         int(r.if_gt5_papers), int(r.if_gt10_papers)]
                         for r in f[f.institution == i].itertuples()] for i in C.INST_NAMES}
     dep = A.department_breakdown(adf, fac)
     D["departments"] = {i: records(dep[dep.institution == i].sort_values("papers", ascending=False))
@@ -503,6 +510,7 @@ def build_data(o):
     D["audit"] = data_audit(df, adf, fac)
     S = o["structure"]
     D["structure"] = S
+    D["ext"] = o.get("ext") or {}
     if nodes and S:
         D["explorer"] = explorer_graph(o, nd)
     D["people"] = people_network(o, df)
@@ -522,7 +530,7 @@ CSS = r"""
   --text:#102a43; --text-2:#334e68; --muted:#627d98; --accent:#0b69a3;
   --grid:#e2e8f0; --teal:#007d69; --teal-bg:#f0f7f5;
   --serif:"Newsreader",Georgia,"Times New Roman",serif;
-  --s1:#2a78d6; --s2:#eb6834; --s3:#1baf7a; --s4:#eda100; --s5:#e87ba4; --s6:#008300; --s7:#6250d6;
+  --s1:#2a78d6; --s2:#eb6834; --s3:#1baf7a; --s4:#eda100; --s5:#e87ba4; --s6:#008300; --s7:#6250d6; --s8:#e34948;
   --other:#b5b4ae;
   --t1:#184f95; --t2:#2a78d6; --t3:#5598e7; --t4:#86b6ef; --t5:#c9c8c2;
 }
@@ -531,7 +539,7 @@ CSS = r"""
     color-scheme: dark;
     --bg:#121211; --surface:#1a1a19; --surface-2:#232321; --border:#33332f;
     --text:#f0efec; --text-2:#c3c2b7; --muted:#8f8e86; --accent:#3987e5; --grid:#2c2c29;
-    --s1:#3987e5; --s2:#d95926; --s3:#199e70; --s4:#c98500; --s5:#d55181; --s6:#008300; --s7:#9085e9;
+    --s1:#3987e5; --s2:#d95926; --s3:#199e70; --s4:#c98500; --s5:#d55181; --s6:#008300; --s7:#9085e9; --s8:#e66767;
     --other:#5d5c57; --teal:#4fb3a1; --teal-bg:#141f1d;
     --t1:#86b6ef; --t2:#5598e7; --t3:#2a78d6; --t4:#1c5cab; --t5:#4a4a46;
   }
@@ -540,7 +548,7 @@ CSS = r"""
   color-scheme: dark;
   --bg:#121211; --surface:#1a1a19; --surface-2:#232321; --border:#33332f;
   --text:#f0efec; --text-2:#c3c2b7; --muted:#8f8e86; --accent:#3987e5; --grid:#2c2c29;
-  --s1:#3987e5; --s2:#d95926; --s3:#199e70; --s4:#c98500; --s5:#d55181; --s6:#008300; --s7:#9085e9;
+  --s1:#3987e5; --s2:#d95926; --s3:#199e70; --s4:#c98500; --s5:#d55181; --s6:#008300; --s7:#9085e9; --s8:#e66767;
   --other:#5d5c57; --teal:#4fb3a1; --teal-bg:#141f1d;
   --t1:#86b6ef; --t2:#5598e7; --t3:#2a78d6; --t4:#1c5cab; --t5:#4a4a46;
 }
@@ -637,15 +645,15 @@ td.win{color:var(--teal,#2a9d8f);font-weight:600}
 .pagefoot{margin-top:34px;padding-top:14px;border-top:1px solid var(--border);font-size:12px;color:var(--muted)}.sub{color:var(--text-2);margin-bottom:18px}
 .grid{display:grid;gap:16px;margin-bottom:16px}
 .g2{grid-template-columns:repeat(2,minmax(0,1fr))}.g3{grid-template-columns:repeat(3,minmax(0,1fr))}
-.g4{grid-template-columns:repeat(4,minmax(0,1fr))}.g6{grid-template-columns:repeat(6,minmax(0,1fr))}
-@media(max-width:1200px){.g4,.g6{grid-template-columns:repeat(3,minmax(0,1fr))}}
+.g4{grid-template-columns:repeat(4,minmax(0,1fr))}.g5{grid-template-columns:repeat(5,minmax(0,1fr))}.g6{grid-template-columns:repeat(6,minmax(0,1fr))}
+@media(max-width:1200px){.g4,.g5,.g6{grid-template-columns:repeat(3,minmax(0,1fr))}}
 @media(max-width:860px){body{flex-direction:column}
   #side{width:100%;height:auto;position:sticky;top:0;z-index:20;display:flex;align-items:center;overflow-x:auto;
     padding:6px 4px;border-right:0;border-bottom:1px solid var(--border)}
   #side .logo,#side .navh,#side .sidelinks{display:none}
   #side .nav{width:auto;flex-shrink:0;margin:0 2px;padding:6px 10px;white-space:nowrap}
   #side .themebtn{margin:0 6px;flex-shrink:0}
-  .g2,.g3,.g4,.g6{grid-template-columns:minmax(0,1fr)}#main{padding:16px}}
+  .g2,.g3,.g4,.g5,.g6{grid-template-columns:minmax(0,1fr)}#main{padding:16px}}
 .card{background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:16px;min-width:0}
 .card h3{font-size:13px;font-weight:600;margin-bottom:2px}
 .card .note{font-size:12px;color:var(--muted);margin-bottom:10px}
@@ -744,6 +752,8 @@ select{padding:4px 6px;border:1px solid var(--border);border-radius:6px;backgrou
 .chip{display:inline-flex;align-items:center;gap:5px;padding:4px 9px;border:1px solid var(--border);border-radius:99px;background:var(--surface);color:var(--text-2);font:inherit;font-size:12px;cursor:pointer;transition:all .15s}
 .chip:hover{border-color:var(--accent);color:var(--text);transform:translateY(-1px)}.chip small{color:var(--muted);font-size:10.5px}
 .chip.x{border-color:var(--s5)}
+.rb{display:inline-block;font-size:11px;line-height:1.5;padding:0 7px;border-radius:99px;border:1px solid var(--border);white-space:nowrap;color:var(--text-2)}
+.rb-ok{border-color:var(--s1);color:var(--text)}.rb-st{border-color:var(--s4);color:var(--text)}.rb-h{border-style:dashed}
 .dpubs{padding-left:18px;font-size:12.5px}.dpubs li{margin-bottom:9px}.dpubs a{color:var(--text)}.dpubs span{display:block;color:var(--muted);font-size:11.5px}
 .dact{display:flex;flex-wrap:wrap;gap:8px;margin-top:20px}.dact a.btn{text-decoration:none}
 .dchoose button{display:block;width:100%;text-align:left;margin-bottom:6px}
@@ -796,11 +806,17 @@ BODY = r"""
   <div class="navh">Start here</div>
   <button class="nav on" data-p="overview"><span class="dot" style="background:var(--muted)"></span>Overview</button>
   <button class="nav" data-p="findings"><span class="dot" style="background:var(--s5)"></span>Findings &amp; modelling</button>
-  <div class="navh">Three institutes</div>
+  <div class="navh">Five institutes</div>
   <button class="nav" data-p="compare"><span class="dot" style="background:var(--s7)"></span>Institution comparison</button>
   <button class="nav" data-p="pubs"><span class="dot" style="background:var(--t2)"></span>Publications &amp; research areas</button>
   <button class="nav" data-p="faculty"><span class="dot" style="background:var(--s4)"></span>Faculty</button>
   %INSTNAV%
+  <div class="navh">Review additions</div>
+  <button class="nav" data-p="quality"><span class="dot" style="background:var(--t1)"></span>Journal quality: Q1–Q4 &amp; IF<i class="new">new</i></button>
+  <button class="nav" data-p="roles"><span class="dot" style="background:var(--s4)"></span>Faculty vs students<i class="new">new</i></button>
+  <button class="nav" data-p="gcc"><span class="dot" style="background:var(--s3)"></span>Giant component (GCC)<i class="new">new</i></button>
+  <button class="nav" data-p="multilayer"><span class="dot" style="background:var(--s7)"></span>Multilayer network<i class="new">new</i></button>
+  <button class="nav" data-p="anomaly"><span class="dot" style="background:var(--s8)"></span>Citation anomalies (Saveetha)<i class="new">new</i></button>
   <div class="navh">Networks</div>
   <button class="nav" data-p="explorer"><span class="dot" style="background:var(--t2)"></span>Network explorer</button>
   <button class="nav" data-p="paths"><span class="dot" style="background:var(--s5)"></span>Degrees of separation<i class="new">new</i></button>
@@ -826,15 +842,15 @@ BODY = r"""
     <svg id="hero-net" aria-hidden="true"></svg>
     <div class="hero-txt">
       <div class="eyebrow">DPCN 2026 · Group 10 · Research mapping</div>
-      <h1>Research output of three IIITs</h1>
-      <p class="tagline">Three institutes, one connected network — held together by a handful of people.</p>
-      <div class="hero-sub">IIIT Allahabad · ABV-IIITM Gwalior · IIIT Bangalore — journal and conference papers 2016–2026 (OpenAlex)</div>
+      <h1>Research output of five IIITs</h1>
+      <p class="tagline">Five institutes, one connected network — held together by a handful of people.</p>
+      <div class="hero-sub">IIIT Allahabad · ABV-IIITM Gwalior · IIIT Bangalore · IIIT Hyderabad · IIIT Delhi — journal and conference papers 2016–2026 (OpenAlex)</div>
     </div>
     <div class="hero-cap">Background: the real co-authorship network (Network explorer view); pulses run along links between institutes</div>
   </header>
   <div class="card lead" style="margin-bottom:16px">
     <h3>Research question</h3>
-    <p>How do the research networks of IIIT Allahabad, ABV-IIITM Gwalior and IIIT Bangalore compare, and how — and through whom — are the three institutes connected to each other?</p>
+    <p>How do the research networks of IIIT Allahabad, ABV-IIITM Gwalior, IIIT Bangalore, IIIT Hyderabad and IIIT Delhi compare, and how — and through whom — are the five institutes connected to each other?</p>
     <p class="note" style="margin-top:6px">A node in the co-authorship network is an author affiliated with one of the institutes on at least one paper; an edge means two such authors co-wrote at least one paper (undirected, weighted by joint papers). A node in the citation network is a paper; an edge A → B means A lists B in its references (directed, unweighted). Edges do not measure friendship, funding or influence beyond these definitions.</p>
   </div>
   <section class="statpanel">
@@ -859,7 +875,7 @@ BODY = r"""
   <div class="mq-head"><h2 class="serif secttl" style="margin:0">Key collaborating institutions</h2><span class="muted">Hover to pause · scrolling continuously</span></div>
   <div class="marquee" id="marquee" aria-label="Indian partner institutions with the most co-authored papers"><div class="mq-track" id="mq-track"></div></div>
   <div class="warn">2026 is a partial year (data collected during 2026); recent papers have had little time to be cited.</div>
-  <div class="card" style="margin-bottom:16px"><h3>The three institutes side by side</h3><div class="note" id="sbs-note">Bars compare institutes within a column; follows the year and team-size filters</div><div class="tw"><table class="sbs" id="ov-tiles"></table></div></div>
+  <div class="card" style="margin-bottom:16px"><h3>The five institutes side by side</h3><div class="note" id="sbs-note">Bars compare institutes within a column; follows the year and team-size filters</div><div class="tw"><table class="sbs" id="ov-tiles"></table></div></div>
   <div class="grid g2">
     <div class="card"><h3>Publication trend</h3><div class="note">Papers per year; dotted segment = partial 2026</div><div class="cw"><canvas id="c-trend"></canvas></div></div>
     <div class="card"><h3>Median citations by publication year</h3><div class="note">Citation counts depend strongly on paper age</div><div class="cw"><canvas id="c-age"></canvas></div></div>
@@ -870,13 +886,13 @@ BODY = r"""
   </div>
   <div class="card" style="margin-bottom:16px"><h3>Research area breakdown</h3><div class="note">% of each institution's papers per OpenAlex field</div><div class="cw tall"><canvas id="c-fields"></canvas></div></div>
   <h2 class="serif secttl">Selected major publications</h2>
-  <p class="muted" style="margin-bottom:10px">The 10 most-cited papers of <b id="pub-yrs"></b> (OpenAlex citation count at collection date). Authors of the three institutes in bold; ↗ opens the DOI.</p>
+  <p class="muted" style="margin-bottom:10px">The 10 most-cited papers of <b id="pub-yrs"></b> (OpenAlex citation count at collection date). Authors of the five institutes in bold; ↗ opens the DOI.</p>
   <div class="publist" id="publist"></div>
 </section>
 <section class="page" id="p-findings">
   <h1>Findings &amp; modelling</h1>
   <div class="sub">Every claim is tested against a baseline (null model, control variables or confidence interval). Observation → evidence → meaning → caveats.</div>
-  <h2 class="sec">How the three institutes connect</h2>
+  <h2 class="sec">How the five institutes connect</h2>
   <div class="grid g2" id="sfind-cards"></div>
   <h2 class="sec">Output, impact and citation flow</h2>
   <div class="grid g3" id="find-cards"></div>
@@ -894,7 +910,7 @@ BODY = r"""
 </section>
 <section class="page" id="p-compare">
   <h1>Institution comparison</h1>
-  <div class="sub">Each institute's own co-authorship subgraph, and every measurable tie between the three</div>
+  <div class="sub">Each institute's own co-authorship subgraph, and every measurable tie between the five</div>
   <div class="card" style="margin-bottom:16px"><h3>Structure of each institute's co-authorship network</h3><div class="note">Authors are assigned to the institute where they have most papers. Path length and diameter on each subgraph's giant component; communities = Louvain (seed 42) on the subgraph.</div><div class="tw"><table id="t-inst"></table></div></div>
   <div class="grid g2">
     <div class="card"><h3>Co-author links within and between institutes</h3><div class="note">Observed links (configuration-model expectation in brackets). Off-diagonal = links between authors of two institutes.</div><div class="tw"><table class="mat" id="t-mix"></table></div></div>
@@ -904,10 +920,10 @@ BODY = r"""
     <div class="card"><h3>Pairwise ties</h3><div class="tw"><table id="t-pairs"></table></div></div>
     <div class="card"><h3>Internal citations between institutes</h3><div class="note">Rows cite columns. Left number: all internal citations; right: after removing author self-citations</div><div class="tw"><table class="mat" id="t-citmat"></table></div></div>
   </div>
-  <div class="card" style="margin-bottom:16px"><h3>Bridge authors</h3><div class="note">Authors with a co-author at another of the three institutes, or whom OpenAlex places at two of them. Ranked by betweenness in the full co-authorship network.</div><div class="tw"><table id="t-bridges"></table></div></div>
+  <div class="card" style="margin-bottom:16px"><h3>Bridge authors</h3><div class="note">Authors with a co-author at another of the five institutes, or whom OpenAlex places at two of them. Ranked by betweenness in the full co-authorship network.</div><div class="tw"><table id="t-bridges"></table></div></div>
   <div class="grid g2">
     <div class="card"><h3>Bottlenecks: minimum node cuts</h3><div class="note">Smallest set of authors whose removal leaves no co-authorship path between two institutes</div><div id="cuts"></div></div>
-    <div class="card"><h3>Shared Indian partners</h3><div class="note">Indian institutions that co-author with all three IIITs, ranked by the smallest of the three counts</div><div class="tw"><table id="t-common"></table></div></div>
+    <div class="card"><h3>Shared Indian partners</h3><div class="note">Indian institutions that co-author with all five IIITs, ranked by the smallest of the five counts</div><div class="tw"><table id="t-common"></table></div></div>
   </div>
   <div class="card"><h3>Output and impact beyond counts</h3><div class="tw"><table id="t-cmp"></table></div></div>
 </section>
@@ -934,38 +950,38 @@ BODY = r"""
 </section>
 <section class="page" id="p-pubs">
   <h1>Publications &amp; research areas</h1>
-  <div class="sub">Where the three institutes publish, how good the venues are, and what they work on</div>
+  <div class="sub">Where the five institutes publish, how good the venues are, and what they work on</div>
   <div class="grid g2">
-    <div class="card"><h3>Research profile of each institute</h3><div class="note">Share of each institute's papers in the ten largest OpenAlex fields (all three on the same axes; square-root radial scale so small fields stay visible — hover for the real %)</div><div class="cw" style="height:440px"><canvas id="c-radar"></canvas></div>
-      <div class="infer"><b>Reading:</b> a point further out = a larger share of that institute's papers. Overlapping shapes = similar research profiles; IIITB leans further towards Computer Science.</div></div>
+    <div class="card"><h3>Research profile of each institute</h3><div class="note">Share of each institute's papers in the ten largest OpenAlex fields (all five on the same axes; square-root radial scale so small fields stay visible — hover for the real %)</div><div class="cw" style="height:440px"><canvas id="c-radar"></canvas></div>
+      <div class="infer"><b>Reading:</b> a point further out = a larger share of that institute's papers. Overlapping shapes = similar research profiles; the conference-heavy IIITs (Bangalore, Hyderabad, Delhi) lean further towards Computer Science.</div></div>
     <div class="card"><h3>The ten most used venues</h3><div class="note">Journals and conference series together, papers per institute</div><div class="cw tall"><canvas id="c-venues"></canvas></div>
       <div class="infer"><b>Reading:</b> proceedings series (LNCS, CCIS, LNNS) dominate; long bars of one colour show venues used mainly by one institute.</div></div>
   </div>
   <div class="grid g2">
     <div class="card"><h3>Is quality improving? Q1 share by year</h3><div class="note">Share of each institute's journal papers in Q1 journals (SJR, year-matched)</div><div class="cw"><canvas id="c-q1y2"></canvas></div>
-      <div class="infer"><b>Reading:</b> a rising line = moving into better journals. IIITA and ABV rose clearly from 2016–19 to 2022–25 (χ² p &lt; 0.001).</div></div>
+      <div class="infer"><b>Reading:</b> a rising line = moving into better journals. IIITA, ABV and IIITH rose significantly from 2016–19 to 2022–25 (χ² p &lt; 0.001); IIITD started highest and stayed there.</div></div>
     <div class="card"><h3>Journals vs conferences, by year</h3><div class="note">Conference papers as % of each institute's output</div><div class="cw"><canvas id="c-jc"></canvas></div>
-      <div class="infer"><b>Reading:</b> IIITB publishes mostly in conferences (typical for computer science), IIITA and ABV mostly in journals.</div></div>
+      <div class="infer"><b>Reading:</b> IIITB (70%), IIITH (61%) and IIITD (54%) publish mostly in conferences (typical for computer science); IIITA and ABV mostly in journals.</div></div>
   </div>
   <div class="grid g2">
-    <div class="card"><h3>Quartile mix by research field</h3><div class="note">Journal papers of the three institutes in the eight largest fields</div><div class="cw tall"><canvas id="c-qmix"></canvas></div></div>
+    <div class="card"><h3>Quartile mix by research field</h3><div class="note">Journal papers of the five institutes in the eight largest fields</div><div class="cw tall"><canvas id="c-qmix"></canvas></div></div>
     <div class="card"><h3>How concentrated are the citations? (Lorenz curve)</h3><div class="note">Papers ranked from most to least cited; the further the curve bows above the diagonal, the more a few papers carry the total</div><div class="cw tall"><canvas id="c-lorenz"></canvas></div></div>
   </div>
-  <div class="card"><h3>Most active research topics</h3><div class="note">OpenAlex subfields, unique papers of all three institutes; citations per paper are raw (older topics accumulate more)</div><div class="tw"><table id="t-topics"></table></div></div>
+  <div class="card"><h3>Most active research topics</h3><div class="note">OpenAlex subfields, unique papers of all five institutes; citations per paper are raw (older topics accumulate more)</div><div class="tw"><table id="t-topics"></table></div></div>
 </section>
 <section class="page" id="p-faculty">
   <h1>Faculty</h1>
-  <div class="sub">Who publishes how much, across all three institutes (authors with ≥3 papers at the institute)</div>
+  <div class="sub">Who publishes how much, across all five institutes (authors with ≥3 papers at the institute)</div>
   <div class="grid g4" id="fx-tiles"></div>
   <div class="card" style="margin-bottom:16px"><h3>Faculty performance</h3>
-    <div class="controls"><input type="search" id="fx-q" placeholder="Search name, department or venue"><span id="fx-inst"></span><label><input type="checkbox" id="fx-core" checked> core faculty only</label><span id="fx-n" class="muted"></span></div>
-    <div class="note">Click a column to sort. h-index = from 2016–2026 papers at the institute; career h = OpenAlex lifetime h-index.</div>
+    <div class="controls"><input type="search" id="fx-q" placeholder="Search name, department or venue"><span id="fx-inst"></span><select id="fx-core" aria-label="Role filter"><option value="fac" selected>Faculty (listed on institute website)</option><option value="faclike">Faculty incl. likely former faculty</option><option value="stu">PhD scholars &amp; students</option><option value="all">Everyone</option></select><span id="fx-n" class="muted"></span></div>
+    <div class="note">Click a column to sort. Role = name matched to the official faculty / student lists on the institute websites (else a heuristic). Q1–Q4 = Scimago journal quartile; IF ≥5 / ≥10 = journal 2-year mean citedness (OpenAlex impact-factor proxy). h-index = from 2016–2026 papers at the institute; career h = OpenAlex lifetime h-index.</div>
     <div class="tw"><table id="t-fx"></table></div></div>
   <div class="card" style="margin-bottom:16px"><h3>Compare two faculty</h3>
     <div class="controls"><select id="fx-a" aria-label="First faculty member"></select><span class="muted">vs</span><select id="fx-b" aria-label="Second faculty member"></select></div>
     <div class="cmp2"><div class="cw"><canvas id="c-fxa"></canvas></div><div class="tw"><table id="t-fx2"></table></div><div class="cw"><canvas id="c-fxb"></canvas></div></div>
     <div class="infer"><b>Reading:</b> the better value on each row is highlighted; bars show papers per year, the table also gives the journal-quartile mix.</div></div>
-  <div class="card"><h3>Every faculty member: papers vs citations</h3><div class="note">Core faculty; bubble size = h-index; hover for the name</div><div class="cw tall"><canvas id="c-fxs"></canvas></div>
+  <div class="card"><h3>Every faculty member: papers vs citations</h3><div class="note">Faculty on the institute lists; bubble size = h-index; hover for the name</div><div class="cw tall"><canvas id="c-fxs"></canvas></div>
     <div class="infer"><b>Reading:</b> further right = more papers, higher = more citations. Bubbles far above the crowd have a few very highly cited papers.</div></div>
 </section>
 <section class="page" id="p-graphx">
@@ -998,7 +1014,7 @@ BODY = r"""
     <h3>1 · Degree and paths</h3>
     <p>Degree k<sub>i</sub> = number of co-authors of author i; mean degree ⟨k⟩ = 2m / n. A path is a sequence of co-authorship links; the shortest-path distance d<sub>ij</sub> is its minimum length, the average path length ⟨d⟩ is the mean over all connected pairs and the diameter is the largest d<sub>ij</sub>.</p>
     <div class="grid g4" id="cc-deg"></div>
-    <p class="note">In this project: paths decide whether two institutes are connected at all (minimum node cut), and how far apart they are (distance matrix). IIITA–IIITB authors are on average <b id="cc-d1"></b> steps apart, versus <b id="cc-d2"></b> inside IIITB.</p>
+    <p class="note">In this project: paths decide whether two institutes are connected at all (minimum node cut), and how far apart they are (distance matrix). The most distant pair of institutes, <b id="cc-d0"></b>, has authors on average <b id="cc-d1"></b> steps apart, versus <b id="cc-d2"></b> inside one institute.</p>
   </div>
   <div class="card cc" style="margin-bottom:16px"><span class="pill used">used in the analysis</span>
     <h3>2 · Log scales and log-binning</h3>
@@ -1025,19 +1041,19 @@ BODY = r"""
 %INSTPAGES%
 <section class="page" id="p-citation">
   <h1>Citation network</h1>
-  <div class="sub">Directed graph within the three institutes: nodes = papers, edge A → B = A cites B</div>
+  <div class="sub">Directed graph within the five institutes: nodes = papers, edge A → B = A cites B</div>
   <div class="grid g4" id="cit-tiles"></div>
   <div class="card" style="margin-bottom:16px"><h3>Internal citation graph</h3>
     <div class="note">The %CITEN% highest-PageRank papers that cite or are cited by another paper in this view (chosen from the top 660). Node size ∝ PageRank, colour = institution. Drag, scroll to zoom.</div>
     <div class="net" id="net-cit"></div><div class="legend" id="leg-cit"></div></div>
   <div class="grid g2">
     <div class="card"><h3>PageRank top 10</h3><div class="note">Most influential papers inside the cluster</div><div class="tw"><table id="t-pr"></table></div></div>
-    <div class="card"><h3>In-degree distribution</h3><div class="note">Times a paper is cited by other papers of the three institutes (log scale)</div><div class="cw"><canvas id="c-indeg"></canvas></div></div>
+    <div class="card"><h3>In-degree distribution</h3><div class="note">Times a paper is cited by other papers of the five institutes (log scale)</div><div class="cw"><canvas id="c-indeg"></canvas></div></div>
   </div>
 </section>
 <section class="page" id="p-authorship">
   <h1>Network analysis</h1>
-  <div class="sub">Co-authorship network of the three institutes — undirected, weighted by joint papers (metrics unweighted unless stated), not connected. The interactive graph is on the Network explorer page.</div>
+  <div class="sub">Co-authorship network of the five institutes — undirected, weighted by joint papers (metrics unweighted unless stated), not connected. The interactive graph is on the Network explorer page.</div>
   <div class="grid g4" id="auth-tiles"></div>
   <div class="card" style="margin-bottom:16px"><h3>Network properties</h3><div class="note">Path length and diameter are computed on the giant component (the graph is disconnected). Citation-network values are on the Citation network page.</div><div class="tw"><table id="t-props"></table></div></div>
   <div class="grid g2">
@@ -1084,7 +1100,7 @@ BODY = r"""
   <div class="card"><ul class="defs" id="defs"></ul></div>
   <div class="card" style="margin-top:16px"><h3>Terms used</h3><div class="note">Plain-language definitions of the measures on this dashboard</div>
     <dl class="gloss">
-      <dt>Degree</dt><dd>Number of distinct co-authors an author has at the three IIITs.</dd>
+      <dt>Degree</dt><dd>Number of distinct co-authors an author has at the five IIITs.</dd>
       <dt>Strength</dt><dd>Degree weighted by joint papers: two people with five joint papers count five.</dd>
       <dt>Betweenness</dt><dd>Share of shortest paths between other authors that pass through this author. High betweenness = a broker.</dd>
       <dt>Bridge author</dt><dd>An author with at least one co-author at a different IIIT, or whom OpenAlex places at two of them.</dd>
@@ -1104,6 +1120,90 @@ BODY = r"""
       <dt>Core faculty</dt><dd>Heuristic: ≥5 papers in ≥3 years, last author on ≥30% and first author on ≤50%. Not an official list.</dd>
       <dt>Partial year</dt><dd>2026 data stops at the collection date (October 2026); recent papers have had little time to be cited.</dd>
     </dl></div>
+</section>
+<section class="page" id="p-quality">
+  <h1>Journal quality: quartiles and impact factor</h1>
+  <div class="sub">Journal papers split by Scimago quartile (Q1 / Q2 / Q3 / Q4) and by impact-factor band (≥10, 5–10, &lt;5). Impact factor = the journal's 2-year mean citedness in OpenAlex: citations in a year to items from the two previous years, divided by those items — the Journal Impact Factor formula, on open data.</div>
+  <div class="grid g5" id="ql-tiles"></div>
+  <div class="card" style="margin-bottom:16px"><h3>Journal papers by quartile and impact-factor band</h3><div class="note">Counts (share of the institute's journal papers). A paper counts for every assigned institute it has an author at.</div><div class="tw"><table id="t-ql"></table></div></div>
+  <div class="grid g2">
+    <div class="card"><h3>Quartile mix</h3><div class="note">Share of journal papers, Q1 darkest</div><div class="cw"><canvas id="c-ql-q"></canvas></div></div>
+    <div class="card"><h3>Impact-factor bands</h3><div class="note">Share of journal papers; "no IF value" = venue without an OpenAlex 2-year citedness</div><div class="cw"><canvas id="c-ql-if"></canvas></div></div>
+  </div>
+  <div class="grid g2">
+    <div class="card"><h3>Quartiles per year</h3><div class="controls" id="ql-inst"></div><div class="cw"><canvas id="c-ql-year"></canvas></div></div>
+    <div class="card"><h3>High-impact journal papers per year</h3><div class="controls" id="ql-band"></div><div class="cw"><canvas id="c-ql-hi"></canvas></div><p class="note">%PARTIAL% is a partial year.</p></div>
+  </div>
+  <div class="grid g2">
+    <div class="card"><h3>Journals behind the IF ≥10 band</h3><div class="note">Most-used IF ≥10 journals per institute</div><div class="tw"><table id="t-ql-j"></table></div></div>
+    <div class="card"><h3>Quartile vs impact factor</h3><div class="note">Both rank journals, but differently: the quartile is relative to the journal's subject category, the IF is an absolute citation rate. Unique journal papers of all five institutes.</div><div class="tw"><table id="t-ql-qi"></table></div>
+      <div class="infer" id="ql-qi-note"></div></div>
+  </div>
+  <div class="card"><h3>Authors with the most IF ≥10 papers</h3><div class="note">Top 10 per institute, any role</div><div class="tw"><table id="t-ql-f"></table></div></div>
+</section>
+<section class="page" id="p-roles">
+  <h1>Faculty vs students</h1>
+  <div class="sub">OpenAlex does not say who is a professor and who is a student. We matched every author's name against the faculty and student lists published on the five institute websites (retrieved 2026-11-07). Authors on no list get a label from their authorship pattern.</div>
+  <div class="grid g4" id="rl-tiles"></div>
+  <div class="card" style="margin-bottom:16px"><h3>How each author was classified</h3><div class="note">Authors per role and institute. Solid = matched to an official list; the last three roles are heuristic (not on the current lists).</div><div class="tw"><table id="t-rl"></table></div>
+    <div class="infer" id="rl-cov"></div></div>
+  <div class="grid g2">
+    <div class="card"><h3>Role mix of each institute's authors</h3><div class="cw"><canvas id="c-rl-mix"></canvas></div></div>
+    <div class="card"><h3>Who forms the co-author links?</h3><div class="note">Links by the roles at both ends: all links vs links between two institutes. "Faculty" = listed or likely faculty; "student" = PhD, M.Tech/B.Tech or likely student.</div><div class="cw"><canvas id="c-rl-edge"></canvas></div></div>
+  </div>
+  <div class="card" style="margin-bottom:16px"><h3>Network position by role</h3><div class="note">Co-authorship network of all five institutes. Betweenness share = share of all shortest-path brokerage held by the role.</div><div class="tw"><table id="t-rl-net"></table></div><div class="infer" id="rl-net-note"></div></div>
+  <div class="grid g2">
+    <div class="card"><h3>Faculty-only network</h3><div class="note">Listed faculty linked when they co-authored a paper</div><div class="tw"><table id="t-rl-fn"></table></div><div class="infer" id="rl-fn-note"></div></div>
+    <div class="card"><h3>Sources and checks</h3><ul class="defs" id="rl-src"></ul></div>
+  </div>
+</section>
+<section class="page" id="p-gcc">
+  <h1>Giant connected component (GCC)</h1>
+  <div class="sub">The largest set of authors in which everyone can reach everyone else through co-author links — the part of the network where research knowledge can actually travel between institutes</div>
+  <div class="grid g4" id="gc-tiles"></div>
+  <div class="grid g2">
+    <div class="card"><h3>Share of each institute's authors inside the GCC</h3><div class="note">Full network (all five institutes) vs the institute's own co-authorship subgraph</div><div class="cw"><canvas id="c-gc-inst"></canvas></div></div>
+    <div class="card"><h3>What lies outside the GCC</h3><div class="note">Other components by size: how many authors sit in them</div><div class="cw"><canvas id="c-gc-out"></canvas></div></div>
+  </div>
+  <div class="grid g2">
+    <div class="card"><h3>GCC growth, 2016–%Y1%</h3><div class="note">Cumulative network: an author enters with the first paper, a link with the pair's first joint paper. Bars: authors in the GCC by institute.</div><div class="cw tall"><canvas id="c-gc-grow"></canvas></div></div>
+    <div class="card"><h3>Inside vs outside the GCC</h3><div class="tw"><table id="t-gc"></table></div><div class="note" style="margin-top:12px">By role</div><div class="tw"><table id="t-gc-role"></table></div></div>
+  </div>
+  <div class="infer" id="gc-note"></div>
+</section>
+<section class="page" id="p-multilayer">
+  <h1>Multilayer network</h1>
+  <div class="sub">The same authors connected in two layers: <b>co-authorship</b> (wrote a paper together) and <b>citation</b> (a paper by one cites a paper by the other; citing oneself is ignored). Plus an institute-level multiplex with four layers.</div>
+  <div class="card" style="margin-bottom:16px"><svg id="ml-diagram" viewBox="0 0 760 210" role="img" aria-label="Two-layer multiplex: the same authors in a co-authorship layer and a citation layer"></svg></div>
+  <div class="grid g4" id="ml-tiles"></div>
+  <div class="grid g2">
+    <div class="card"><h3>The two layers</h3><div class="tw"><table id="t-ml"></table></div></div>
+    <div class="card"><h3>Edge overlap</h3><div class="note">Author pairs linked in one layer, the other, or both</div><div class="cw"><canvas id="c-ml-ov"></canvas></div><div class="infer" id="ml-ov-note"></div></div>
+  </div>
+  <div class="grid g2">
+    <div class="card"><h3>Participation coefficient</h3><div class="note">P = 0: all of an author's links are in one layer; P = 1: evenly split. Authors with links in either layer.</div><div class="cw"><canvas id="c-ml-p"></canvas></div></div>
+    <div class="card"><h3>Multiplex hubs</h3><div class="note">Most links over both layers</div><div class="tw"><table id="t-ml-hub"></table></div></div>
+  </div>
+  <div class="card"><h3>Institute-level multiplex</h3><div class="note">One row per pair of institutes, one column per layer: co-author links, citations between their papers, overlap of their Indian partner sets (Jaccard), similarity of their research topics (Jaccard of OpenAlex subfields)</div><div class="tw"><table id="t-ml-inst"></table></div><div class="infer" id="ml-inst-note"></div></div>
+</section>
+<section class="page" id="p-anomaly">
+  <h1>Citation anomalies: the Saveetha University case</h1>
+  <div class="sub">Which Indian institutions cite the five IIITs, and is any of them unusual? A citing institution stands out when its citations are much larger than its collaboration with us, or when it supplies most of the citations of particular papers.</div>
+  <div class="warn" id="an-context"></div>
+  <div class="grid g5" id="an-tiles"></div>
+  <div class="grid g2">
+    <div class="card"><h3>Saveetha's share of all Indian citing works, per year</h3><div class="note">Works by other Indian institutions citing a paper of the five IIITs</div><div class="cw"><canvas id="c-an-year"></canvas></div></div>
+    <div class="card"><h3>What would change without Saveetha's citations?</h3><div class="note">Citations and h-index of each institute's 2016–2026 papers, with the citing works that have a Saveetha author removed</div><div class="tw"><table id="t-an-sens"></table></div></div>
+  </div>
+  <div class="card" style="margin-bottom:16px"><h3>Legitimate citing or a citation circle? Three tests</h3>
+    <div class="note">Saveetha against the median of the other ten largest citing institutions. (1) <b>Size</b>: a big institution cites more simply because it publishes more, so we divide its share of the works citing us by its share of all Indian papers 2016–2026. (2) <b>Who cites</b>: real interest is spread over many authors; a circle shows few authors and authors who co-write with the cited people. (3) <b>Topic</b>: a relevant citation usually comes from the same research field. A test is flagged when Saveetha is more than 1.5× worse than the median.</div>
+    <div class="tw"><table id="t-an-tests"></table></div><div class="tw" style="margin-top:12px"><table id="t-an-cmp"></table></div><div class="infer" id="an-verdict"></div></div>
+  <div class="card" style="margin-bottom:16px"><h3>Top citing Indian institutions</h3><div class="note">Citation links = (citing work, cited paper) pairs. Links per co-authored paper and its robust z-score compare citing with collaborating; "dominated" = papers with ≥10 citations of which this institution supplies ≥50%. Flag = z ≥ 2 or ≥3 dominated papers.</div><div class="tw"><table id="t-an-inst"></table></div></div>
+  <div class="grid g2">
+    <div class="card"><h3>Papers most cited by Saveetha</h3><div class="tw"><table id="t-an-pap"></table></div></div>
+    <div class="card"><h3>Authors most affected</h3><div class="note">Authors with ≥10 citations from Saveetha works; h without = h-index after removing them</div><div class="tw"><table id="t-an-auth"></table></div></div>
+  </div>
+  <div class="infer" id="an-note"></div>
 </section>
 <section class="page" id="p-paths">
   <h1>Degrees of separation</h1>
@@ -1174,8 +1274,8 @@ INST_PAGE = r"""
   </div>
   <div class="card" style="margin-bottom:16px"><h3>Faculty list &amp; performance</h3>
     <div class="controls"><input type="search" placeholder="Search name, department, journal" id="q-%KEY%">
-      <label><input type="checkbox" id="core-%KEY%" checked> core faculty only</label><span id="n-%KEY%"></span></div>
-    <div class="note">Click a column to sort. h-index uses 2016–2026 papers; lifetime h-index from the OpenAlex author profile. * = department inferred.</div>
+      <select id="role-%KEY%" aria-label="Role filter"><option value="fac" selected>Faculty (listed on institute website)</option><option value="faclike">Faculty incl. likely former faculty</option><option value="stu">PhD scholars &amp; students</option><option value="all">Everyone</option></select><span id="n-%KEY%"></span></div>
+    <div class="note">Click a column to sort. Role = name matched to the institute's official faculty / student lists (else a heuristic from authorship pattern). Q1–Q4 = Scimago quartile of the journal; IF ≥5 / ≥10 = journal 2-year mean citedness (OpenAlex, impact-factor proxy). h-index uses 2016–2026 papers; lifetime h from OpenAlex. * = department inferred.</div>
     <div class="tw"><table id="t-fac-%KEY%"></table></div></div>
   <div class="card"><h3>Top 10 most-cited papers</h3><div class="tw"><table id="t-cited-%KEY%"></table></div></div>
 </section>
@@ -1185,7 +1285,7 @@ JS = r"""
 const D = %DATA%;
 const INST = D.meta.institutions, KEYS = D.meta.keys, YEARS = D.meta.years;
 const KEY2INST = Object.fromEntries(Object.entries(KEYS).map(([a,b])=>[b,a]));
-const SLOT = {}; INST.forEach((n,i)=>SLOT[n]="--s"+(i+1));
+const SLOT = D.meta.slots;
 const css = v => getComputedStyle(document.documentElement).getPropertyValue(v).trim();
 const col = inst => css(SLOT[inst]||"--other");
 const TIER = ["--t1","--t2","--t3","--t4","--t5"];
@@ -1227,11 +1327,15 @@ function table(id, cols, rows, opts={}){
   render();
 }
 
+const ROLE_FAC=["Faculty","Adjunct / visiting faculty"], ROLE_STU=["PhD scholar","Student (MS / M.Tech / B.Tech)","Likely student / researcher"];
+function roleOk(r,mode){ return mode==="all"||(mode==="fac"&&ROLE_FAC.includes(r))||(mode==="faclike"&&(ROLE_FAC.includes(r)||r==="Likely faculty (not listed)"))||(mode==="stu"&&ROLE_STU.includes(r)); }
+function roleBadge(r){ const v=ROLE_FAC.includes(r)?"ok":(r==="PhD scholar"||r==="Student (MS / M.Tech / B.Tech)")?"st":"h";
+  return `<span class="rb rb-${v}" title="${v==="h"?"heuristic: not found on the institute's lists":"matched to the institute's official list"}">${esc(r||"–")}</span>`; }
 function tile(lab,val,foot){ return `<div class="card tile"><div class="lab">${lab}</div><div class="val">${val}</div><div class="foot">${foot||""}</div></div>`; }
 
 // ── Overview ───────────────────────────────────────────
 const ST = D.structure||{};
-const AB = {"IIIT Allahabad":"IIITA","ABV-IIITM Gwalior":"ABV","IIIT Bangalore":"IIITB"};
+const AB = D.meta.abbr;
 const pct = x => (x*100).toFixed(x<0.01?1:0)+"%";
 function renderOverview(){
   const S = Object.fromEntries(D.summary.map(s=>[s.institution,s]));
@@ -1322,7 +1426,7 @@ function renderLolli(which){
   LOLLI=which; const inR=yr=>yr>=YR[0]&&yr<=YR[1];
   const C_=D.cites_by_year||{}, el=document.getElementById("lolli");
   const sel=document.getElementById("lolli-sel");
-  sel.innerHTML=["All",...INST].map(i=>`<button data-i="${i}" class="${i===which?"on":""}">${i==="All"?"All three":AB[i]}</button>`).join("");
+  sel.innerHTML=["All",...INST].map(i=>`<button data-i="${i}" class="${i===which?"on":""}">${i==="All"?"All five":AB[i]}</button>`).join("");
   sel.onclick=e=>{ if(e.target.dataset.i) renderLolli(e.target.dataset.i); };
   if(!C_[which]){ el.innerHTML=""; document.getElementById("lolli-cap").textContent="Citations per year need the private OpenAlex cache at build time."; return; }
   const vals=C_[which], W=el.clientWidth||900, H=170, m={l:30,r:30,t:26,b:24};
@@ -1340,7 +1444,7 @@ function renderLolli(which){
     .on("mousemove",(e,d)=>showTip(e,`<b>${d.yr}</b>${fmt(d.v)} citations received${d.part?" (year in progress)":""}<br>click to show ${d.yr} only`)).on("mouseleave",hideTip);
   g.append("text").attr("y",H-6).attr("text-anchor","middle").attr("font-size",11).attr("fill",d=>d.part?c:css("--muted")).attr("font-weight",d=>d.part?600:400).text(d=>"'"+String(d.yr).slice(2));
   s.append("text").attr("x",x(peak.yr)).attr("y",y(peak.v)-12).attr("text-anchor","middle").attr("font-size",11).attr("fill",c).text("peak");
-  document.getElementById("lolli-cap").innerHTML=`Citations received per calendar year by ${which==="All"?"the three institutes' papers":esc(which)+"'s papers"} (OpenAlex counts by year) · peak ${peak.yr}: ${fmt(peak.v)} · ${D.meta.partial_year} in progress`;
+  document.getElementById("lolli-cap").innerHTML=`Citations received per calendar year by ${which==="All"?"the five institutes' papers":esc(which)+"'s papers"} (OpenAlex counts by year) · peak ${peak.yr}: ${fmt(peak.v)} · ${D.meta.partial_year} in progress`;
 }
 function renderChips(){
   const lo=YEARS.indexOf(YR[0]), hi=YEARS.indexOf(YR[1]);
@@ -1439,12 +1543,15 @@ function renderInst(key){
     {h:"Core faculty",v:r=>r.core_faculty,num:true},{h:"Median h",v:r=>r.median_h??"–",num:true}], (D.departments||{})[inst]||[], {sort:1});
   const F = D.faculty[inst];
   const fcols=[{h:"Name",v:r=>r[0]},{h:"Department",v:r=>r[1],f:r=>esc(r[1])+(r[2]?" *":"")},
+    {h:"Role",v:r=>r[14],f:r=>roleBadge(r[14])},
     {h:"Papers",v:r=>r[3],num:true},{h:"Journal",v:r=>r[4],num:true},{h:"Conf.",v:r=>r[5],num:true},{h:"Q1",v:r=>r[6],num:true},
+    {h:"Q2",v:r=>r[15],num:true},{h:"Q3",v:r=>r[16],num:true},{h:"Q4",v:r=>r[17],num:true},
+    {h:"IF ≥5",v:r=>r[18],num:true},{h:"IF ≥10",v:r=>r[19],num:true},
     {h:"Citations",v:r=>r[7],num:true,f:r=>fmt(r[7])},{h:"h-index",v:r=>r[8],num:true},{h:"Lifetime h",v:r=>r[9]??-1,num:true,f:r=>r[9]??"–"},
     {h:"Top journal / venue",v:r=>r[10]},{h:"Active",v:r=>r[11],f:r=>r[11]+"–"+r[12]}];
-  const q=document.getElementById("q-"+key), cb=document.getElementById("core-"+key);
-  const upd=()=>{ const s=q.value.toLowerCase(); const rows=F.filter(r=>(!cb.checked||r[13])&&(!s||(r[0]+" "+r[1]+" "+r[10]).toLowerCase().includes(s)));
-    document.getElementById("n-"+key).textContent=rows.length+" authors"; table("t-fac-"+key,fcols,rows,{sort:7,inst:KEY2INST[key]}); };
+  const q=document.getElementById("q-"+key), cb=document.getElementById("role-"+key);
+  const upd=()=>{ const s=q.value.toLowerCase(); const rows=F.filter(r=>roleOk(r[14],cb.value)&&(!s||(r[0]+" "+r[1]+" "+r[10]).toLowerCase().includes(s)));
+    document.getElementById("n-"+key).textContent=rows.length+" authors"; table("t-fac-"+key,fcols,rows,{sort:11,inst:KEY2INST[key]}); };
   q.oninput=upd; cb.onchange=upd; upd();
   citedTable("t-cited-"+key, D.most_cited_inst[inst], false);
 }
@@ -1528,7 +1635,7 @@ function renderAuthorship(){
     ["Nodes / edges",`${fmt(co.nodes)} / ${fmt(co.edges)}`,"authors / distinct co-author pairs"],
     ["Density",co.density,"0.1% of all possible pairs are linked"],
     ["Connected components",fmt(co.components),`${fmt(co.isolated_nodes)} isolated authors (no co-author at the 3 institutes); second-largest component ${co.second_component}`],
-    ["Giant component",`${fmt(co.giant_nodes)} (${co.giant_share_pct}%)`,"contains authors of all three institutes"],
+    ["Giant component",`${fmt(co.giant_nodes)} (${co.giant_share_pct}%)`,"contains authors of all five institutes"],
     ["Degree: mean / median / max",`${co.degree?.mean} / ${co.degree?.median} / ${co.degree?.max}`,`top 5% of authors hold ${co.degree?.share_of_degree_top5pct}% of degree`],
     ["Average clustering / transitivity",`${co.avg_clustering} / ${co.transitivity}`,"local clustering is high because each paper creates a clique; transitivity is lower because hubs have many unconnected co-authors"],
     ["Average path length (giant)",co.giant_avg_path_length,"exact, all pairs"],
@@ -1566,7 +1673,7 @@ function renderAuthorship(){
   const ce=ST.centrality||{};
   table("t-cagree",[{h:"Pair",v:r=>r[0]},{h:"Spearman ρ",v:r=>r[1],num:true}],Object.entries(ce.spearman||{}).map(([k,v])=>[k.replace("~"," ~ "),v]));
   const em=ce.eigenvector_mass_pct||{};
-  document.getElementById("eig-note").innerHTML=`Eigenvector centrality is <b>not</b> used to compare institutes: ${INST.map(i=>AB[i]+" "+em[i]+"%").join(", ")} of its squared mass sits in one institute — it localises on IIITA's densest cluster, a known failure on modular networks. Degree and betweenness are the informative measures here.`;
+  document.getElementById("eig-note").innerHTML=`Eigenvector centrality is <b>not</b> used to compare institutes: ${INST.map(i=>AB[i]+" "+em[i]+"%").join(", ")} of its squared mass — it localises on ${AB[INST.slice().sort((a,b)=>em[b]-em[a])[0]]}'s densest cluster, a known failure on modular networks. Degree and betweenness are the informative measures here.`;
   const cn={degree:"normalised degree — share of all other authors who are co-authors",betweenness:"share of shortest paths passing through the author (exact, full network)",closeness:"inverse mean distance to everyone in the giant component",eigenvector:"localised on one cluster (see note above)"};
   const rc=m=>{ document.getElementById("cent-note").textContent=cn[m];
     table("t-cent",[{h:"#",v:r=>ce.top10[m].indexOf(r)+1,num:true},{h:"Author",v:r=>r.name},{h:"Institution",v:r=>r.institution,f:r=>`<span class="swatch" style="background:${col(r.institution)}"></span>${esc(r.institution)}`},
@@ -1684,7 +1791,7 @@ function renderNetTests(){
 }
 
 // ── Confidence labels for findings ─────────────────────
-const SUGGESTIVE=["The IIITA–ABV link","The IIITs are connected indirectly","The 'international premium'","Citations follow collaboration"];
+const SUGGESTIVE=["Ties between IIITs","The IIITs are connected indirectly","The 'international premium'","Citations follow collaboration"];
 const confBadge=t=>SUGGESTIVE.some(x=>t.startsWith(x))?'<span class="conf sugg">Suggestive</span>':'<span class="conf strong">Strong evidence</span>';
 
 // ── Methods & limitations (shared text) ───────────────
@@ -1703,7 +1810,7 @@ function METHODS(){
     ["Log-binned degree distribution","implemented","heavy-tailed data are unreadable on linear or unit-bin log axes",
       `max degree ${(ST.coauthorship||{}).degree?.max} vs ${(ST.er_baseline||{}).max_degree_sim} (ER)`,"a power law — no exponent is fitted or claimed"],
     ["Centralities (degree, betweenness, closeness, eigenvector)","implemented","identify collaborators, brokers and well-placed authors",
-      "degree~betweenness ρ = "+((ST.centrality||{}).spearman||{})["degree~betweenness"],"importance outside these three institutes; eigenvector localises and is not used for comparison"],
+      "degree~betweenness ρ = "+((ST.centrality||{}).spearman||{})["degree~betweenness"],"importance outside these five institutes; eigenvector localises and is not used for comparison"],
     ["Minimum node cuts & distance matrix","implemented","measure how many people, and how many steps, separate institutes",
       Object.entries((ST.bridges||{}).min_node_cuts||{}).map(([k,v])=>k+" "+v.node_connectivity).join(", "),"that the cut authors are the only people who talk across institutes off-paper"],
     ["Robustness (targeted vs random removal)","implemented","tests dependence on brokers, the practical meaning of a hub-dominated network",
@@ -1816,7 +1923,7 @@ function renderCourse(){
     tile("Median / max degree",`${co.degree?.median} / ${co.degree?.max}`,"mean > median: right-skewed"),
     tile("Average path length",co.giant_avg_path_length,`giant component, ${fmt(co.giant_nodes)} authors`),
     tile("Diameter",co.giant_diameter,"longest shortest path")].join("");
-  document.getElementById("cc-d1").textContent=ds["IIITA-IIITB"]; document.getElementById("cc-d2").textContent=ds["IIITB-IIITB"];
+  const far=Object.entries(ds).filter(([k])=>k.split("-")[0]!==k.split("-")[1]).sort((a,b)=>b[1]-a[1])[0]||["–",null]; const own=far[0].split("-")[1]; document.getElementById("cc-d0").textContent=far[0].replace("-","–"); document.getElementById("cc-d1").textContent=far[1]; document.getElementById("cc-d2").textContent=(ds[own+"-"+own]??"–")+" ("+own+")";
   const dd=(ST.degree_distribution||{}).coauthorship;
   const lbNote={lin:"Linear axes: almost all mass is at k ≤ 5 and the tail is invisible.",
     log:"Unit bins on log axes: the tail breaks into noisy points at 1 author per degree value (p = 1/n).",
@@ -1867,9 +1974,9 @@ function renderMethod(){
     "<b>Quartile.</b> Journals: Scimago SJR best quartile of the journal in the publication year (2026 uses SJR 2025); 'Unranked' = not indexed by Scimago. Conferences: ICORE2026 rank, matched strictly (acronym + title overlap, or near-identical title; workshops and extended abstracts never inherit the main-track rank).",
     "<b>Faculty.</b> Authors whose OpenAlex affiliation on the paper is the institution. The OpenAlex author ID is the unit of identity; two IDs (or ID-less authorships) are merged only if they have the same normalised name, the same institute, never share a paper and share at least one co-author — a matching name alone is never enough (DECISIONS.md). <i>Core faculty</i> (heuristic for permanent faculty): ≥5 papers in ≥3 different years, last author on ≥30% and first author on ≤50% of them (excludes most PhD students). Departments come from 'Department of …' in the raw affiliation strings; if an author never states one, it is inferred from their dominant OpenAlex field (marked *).",
     "<b>h-index.</b> Faculty and institutional h-indices use the 2016–2026 papers in this dataset; 'lifetime h' is OpenAlex's author summary statistic.",
-    "<b>Citation network.</b> Edges are taken from OpenAlex referenced_works. PageRank (α = 0.85) and in-degree are computed on the internal graph (papers of the three institutes citing each other), as the note requires; edges to/from other Indian institutes are kept in citation_network.csv only.",
+    "<b>Citation network.</b> Edges are taken from OpenAlex referenced_works. PageRank (α = 0.85) and in-degree are computed on the internal graph (papers of the five institutes citing each other), as the note requires; edges to/from other Indian institutes are kept in citation_network.csv only.",
     "<b>Citation flow.</b> A citation link counts as in-flow (out-flow) when the citing (cited) work has an Indian affiliation other than the institute itself. Impact ratio = in-flow / out-flow.",
-    "<b>Authorship network.</b> Nodes = authors of the three institutes, edges weighted by joint papers. Betweenness is exact; Louvain (networkx, seed 42). Papers with >50 authors do not add edges to external co-authors. Each author has one main institute (most papers there). 'Links between institutes' = links between authors with different main institutes; 'inter-group pairs' in authorship_network.csv = pairs listed at two different institutes on the same paper.",
+    "<b>Authorship network.</b> Nodes = authors of the five institutes, edges weighted by joint papers. Betweenness is exact; Louvain (networkx, seed 42). Papers with >50 authors do not add edges to external co-authors. Each author has one main institute (most papers there). 'Links between institutes' = links between authors with different main institutes; 'inter-group pairs' in authorship_network.csv = pairs listed at two different institutes on the same paper.",
     "<b>Structure (part5b).</b> Configuration-model expectation of links between institutes E[e<sub>AB</sub>] = d<sub>A</sub>d<sub>B</sub>/2m; ER baseline = 5 G(n, m) graphs; minimum node cuts via max-flow with super-source/sink; robustness = static removal by initial betweenness vs 10 random orders; distances = exact all-pairs BFS on the giant component; log-binning with geometric bins.",
     "<b>Clusters.</b> Partner institutions are grouped by name/type (IIT, NIT, IIIT, IISER/IISc, CSIR, DAE, central university, industry …). 'Cross-cluster' = partner outside the IIIT cluster.",
     "<b>Inference.</b> Growth = log-linear fit 2016–2025; Q1 shift = χ² test (2016–19 vs 2022–25); normalised citation score = citations ÷ mean of papers with the same year, field and type (papers up to 2024, >50-author papers excluded), bootstrap 95% CIs; regression = OLS on log(1+citations) with HC1 robust errors; homophily = 1000 target-shuffled citation graphs; modularity = 20 configuration-model graphs.",
@@ -1921,19 +2028,21 @@ function renderPubsPage(){
 // ── Faculty ────────────────────────────────────────────
 function renderFaculty(){
   const F=D.facx||[]; if(!F.length) return;
-  const core=F.filter(r=>r.core), top=core.slice().sort((a,b)=>b.p-a.p)[0], toph=core.slice().sort((a,b)=>b.h-a.h)[0];
+  const core=F.filter(r=>ROLE_FAC.includes(r.role)), top=core.slice().sort((a,b)=>b.p-a.p)[0], toph=core.slice().sort((a,b)=>b.h-a.h)[0];
   document.getElementById("fx-tiles").innerHTML=[
-    tile("Core faculty (per institute)",fmt(core.length),INST.map(i=>AB[i]+" "+core.filter(r=>r.i===i).length).join(" · ")+(core.length!==(D.summary.find(s=>s.institution.startsWith("All"))||{}).core_faculty?` · ${(D.summary.find(s=>s.institution.startsWith("All"))||{}).core_faculty} people (one counted at two institutes)`:"")),
-    tile("Most prolific (core)",fmt(top.p)+" papers",esc(top.n)+" · "+AB[top.i]),
+    tile("Listed faculty with ≥3 papers",fmt(core.length),INST.map(i=>AB[i]+" "+core.filter(r=>r.i===i).length).join(" · ")),
+    tile("Most prolific (faculty)",fmt(top.p)+" papers",esc(top.n)+" · "+AB[top.i]),
     tile("Highest h-index (window)",toph.h,esc(toph.n)+" · "+AB[toph.i]),
-    tile("Median core-faculty output",median(core.map(r=>r.p))+" papers",`median h-index ${median(core.map(r=>r.h))}`)].join("");
+    tile("Median faculty output",median(core.map(r=>r.p))+" papers",`median h-index ${median(core.map(r=>r.h))}`)].join("");
   const on=new Set(INST);
   document.getElementById("fx-inst").innerHTML=INST.map(i=>`<label><input type="checkbox" value="${i}" checked> <span class="swatch" style="background:${col(i)}"></span>${AB[i]}</label>`).join(" ");
   const cols=[{h:"Name",v:r=>r.n,f:r=>`<span class="swatch" style="background:${col(r.i)}"></span>${esc(r.n)}`},{h:"Institute",v:r=>AB[r.i]},{h:"Department",v:r=>r.dep},
     {h:"Papers",v:r=>r.p,num:true},{h:"Citations",v:r=>r.cit,num:true,f:r=>fmt(r.cit)},{h:"h-index",v:r=>r.h,num:true},{h:"Career h",v:r=>r.hl??-1,num:true,f:r=>r.hl??"–"},
-    {h:"Q1",v:r=>r.q1,num:true},{h:"Top venue",v:r=>r.top},{h:"Active",v:r=>r.fy,f:r=>r.fy+"–"+r.ly}];
+    {h:"Role",v:r=>r.role,f:r=>roleBadge(r.role)},
+    {h:"Q1",v:r=>r.q[0],num:true},{h:"Q2",v:r=>r.q[1],num:true},{h:"Q3",v:r=>r.q[2],num:true},{h:"Q4",v:r=>r.q[3],num:true},
+    {h:"IF ≥5",v:r=>r.if5,num:true},{h:"IF ≥10",v:r=>r.if10,num:true},{h:"Top venue",v:r=>r.top},{h:"Active",v:r=>r.fy,f:r=>r.fy+"–"+r.ly}];
   const q=document.getElementById("fx-q"), cb=document.getElementById("fx-core");
-  const upd=()=>{ const s=q.value.toLowerCase(); const rows=F.filter(r=>on.has(r.i)&&(!cb.checked||r.core)&&(!s||(r.n+" "+r.dep+" "+r.top).toLowerCase().includes(s)));
+  const upd=()=>{ const s=q.value.toLowerCase(); const rows=F.filter(r=>on.has(r.i)&&roleOk(r.role,cb.value)&&(!s||(r.n+" "+r.dep+" "+r.top).toLowerCase().includes(s)));
     document.getElementById("fx-n").textContent=rows.length+" authors"; table("t-fx",cols,rows,{sort:4,limit:300}); };
   q.oninput=upd; cb.onchange=upd; document.getElementById("fx-inst").onchange=e=>{ e.target.checked?on.add(e.target.value):on.delete(e.target.value); upd(); }; upd();
   // compare two faculty
@@ -2076,8 +2185,8 @@ function openProfile(i){
     <div class="dkpi"><div><b>${p.papers}</b><span>papers 2016–26</span></div><div><b>${p.deg}</b><span>co-authors at the IIITs</span></div>
       <div><b>#${N.brank[i].toLocaleString()}</b><span>betweenness rank of ${N.n.toLocaleString()}</span></div><div><b>C${p.cm}</b><span>Louvain community</span></div></div>
     <h4>Papers per year</h4>${spark}
-    <h4>Co-authors at the three IIITs (${co.length})</h4>
-    <div class="chips">${co.slice(0,24).map(c=>`<button class="chip${c.x?" x":""}" data-pi="${c.v}" title="${c.w} joint paper${c.w>1?"s":""}, first in ${YEARS[0]+c.y}"><span class="swatch" style="background:${pcol(c.v)}"></span>${esc(PP.a[c.v][0])} <small>${c.w}</small></button>`).join("")||"<p class='muted'>No co-authors at the three IIITs.</p>"}</div>
+    <h4>Co-authors at the five IIITs (${co.length})</h4>
+    <div class="chips">${co.slice(0,24).map(c=>`<button class="chip${c.x?" x":""}" data-pi="${c.v}" title="${c.w} joint paper${c.w>1?"s":""}, first in ${YEARS[0]+c.y}"><span class="swatch" style="background:${pcol(c.v)}"></span>${esc(PP.a[c.v][0])} <small>${c.w}</small></button>`).join("")||"<p class='muted'>No co-authors at the five IIITs.</p>"}</div>
     <p class="muted" style="font-size:12px;margin-top:6px">${co.length>24?`+ ${co.length-24} more · `:""}pink outline = co-author at another IIIT · number = joint papers</p>
     <h4>Most-cited papers here</h4>
     <ol class="dpubs">${p.top.map(k=>{const q=PP.p[k]; return `<li>${q[3]?`<a href="https://doi.org/${esc(q[3])}" target="_blank" rel="noopener">${esc(q[0])}</a>`:esc(q[0])}<span>${q[1]}${q[4]?" · "+esc(q[4]):""} · ${fmt(q[2])} citations</span></li>`;}).join("")}</ol>
@@ -2198,7 +2307,7 @@ function renderPaths(){
       read.innerHTML=`<p><b>${esc(PP.a[a][0])}</b> can reach <b>${reach.toLocaleString()}</b> of the ${N.n.toLocaleString()} authors through co-authors, on average <b>${md.toFixed(2)}</b> steps away.</p>`; return; }
     const co=ST.coauthorship||{};
     if(r.d[b]<0){
-      out.innerHTML=`<div class="pathhead"><span class="big">∞</span><span>No chain of co-authors links these two authors.</span></div><p class="muted">They sit in different connected components: nobody at the three IIITs has written with people on both sides.</p>`;
+      out.innerHTML=`<div class="pathhead"><span class="big">∞</span><span>No chain of co-authors links these two authors.</span></div><p class="muted">They sit in different connected components: nobody at the five IIITs has written with people on both sides.</p>`;
       read.innerHTML=`<p>${esc(PP.a[b][0])} is outside the component of ${esc(PP.a[a][0])}, which has ${(reach+1).toLocaleString()} authors.${co.giant_share_pct?` The largest component holds ${co.giant_share_pct}% of all authors; the rest are small separate groups and ${fmt(co.isolated_nodes)} authors with no co-author here.`:""}</p>`; return; }
     const path=[]; for(let v=b;v!==-1;v=r.par[v]) path.unshift(v);
     const edge=(u,v)=>(N.adj[u].find(x=>x[0]===v)||[v,1,0]);
@@ -2323,6 +2432,200 @@ function renderGrowth(){
     options:baseOpts({scales:{y:{title:{display:true,text:"links",color:css("--muted")}},y1:{position:"right",grid:{display:false},ticks:{color:css("--text-2")},beginAtZero:true,title:{display:true,text:"% of links",color:css("--muted")}}}})});
 }
 
+
+// ── Review additions ───────────────────────────────────
+const EXT = D.ext||{};
+function stack100(id, labels, series, colors){
+  chart(id,{type:"bar",data:{labels,datasets:series.map((sr,k)=>({label:sr.label,data:sr.data,backgroundColor:colors[k],borderColor:css("--surface"),borderWidth:{right:2},borderSkipped:false,borderRadius:0}))},
+    options:baseOpts({indexAxis:"y",scales:{x:{stacked:true,max:100,ticks:{callback:v=>v+"%"}},y:{stacked:true}},
+      plugins:{tooltip:{callbacks:{label:c=>`${c.dataset.label}: ${c.raw}%`}}}})});
+}
+function instButtons(elId, cur, onPick, withAll){
+  const el=document.getElementById(elId); const list=(withAll?["All"]:[]).concat(INST);
+  const draw=()=>{ el.innerHTML=`<div class="seg">`+list.map(i=>`<button data-i="${i}" class="${i===cur?"on":""}">${i==="All"?"All":AB[i]}</button>`).join("")+`</div>`;
+    el.querySelectorAll("button").forEach(b=>b.onclick=()=>{cur=b.dataset.i; draw(); onPick(cur);}); };
+  draw(); onPick(cur);
+}
+function renderQuality(){
+  const Q=EXT.quality; if(!Q) return;
+  const tq=["--t1","--t2","--t3","--t4","--t5"].map(css);
+  document.getElementById("ql-tiles").innerHTML=INST.map(i=>{const b=Q.by_inst[i];
+    return tile(`<span class="swatch" style="background:${col(i)}"></span>${AB[i]}`,b.quartile_pct.Q1+"% Q1",`${fmt(b.if_gt10)} papers IF ≥10 · ${fmt(b.if_gt5)} IF ≥5 · median IF ${b.median_if??"–"}`);}).join("");
+  const c=(b,k,kind)=>`${fmt(b[kind+"_counts"][k])} <span class="muted">(${b[kind+"_pct"][k]}%)</span>`;
+  table("t-ql",[{h:"Institute",v:r=>r,f:r=>`<span class="swatch" style="background:${col(r)}"></span>${esc(r)}`},
+    {h:"Journal papers",v:r=>Q.by_inst[r].journal_papers,num:true,f:r=>fmt(Q.by_inst[r].journal_papers)},
+    ...Q.quartiles.map(k=>({h:k,v:r=>Q.by_inst[r].quartile_counts[k],num:true,f:r=>c(Q.by_inst[r],k,"quartile")})),
+    {h:"IF ≥10",v:r=>Q.by_inst[r].if_counts[">=10"],num:true,f:r=>c(Q.by_inst[r],">=10","if")},
+    {h:"IF 5–10",v:r=>Q.by_inst[r].if_counts["5-10"],num:true,f:r=>c(Q.by_inst[r],"5-10","if")},
+    {h:"IF ≥5 (total)",v:r=>Q.by_inst[r].if_gt5,num:true,f:r=>`${fmt(Q.by_inst[r].if_gt5)} <span class="muted">(${Q.by_inst[r].if_gt5_pct}%)</span>`},
+    {h:"IF &lt;5",v:r=>Q.by_inst[r].if_counts["<5"],num:true,f:r=>c(Q.by_inst[r],"<5","if")},
+    {h:"Median IF",v:r=>Q.by_inst[r].median_if??-1,num:true,f:r=>Q.by_inst[r].median_if??"–"},
+    {h:"Q1 and IF ≥5",v:r=>Q.by_inst[r].q1_and_if_gt5,num:true}], INST.slice());
+  stack100("c-ql-q",INST.map(i=>AB[i]),Q.quartiles.map(k=>({label:k,data:INST.map(i=>Q.by_inst[i].quartile_pct[k])})),tq);
+  stack100("c-ql-if",INST.map(i=>AB[i]),Q.bands.map(k=>({label:k==="No IF value"?k:"IF "+k.replace(">=","≥"),data:INST.map(i=>Q.by_inst[i].if_pct[k])})),[tq[0],tq[1],tq[3],tq[4]]);
+  instButtons("ql-inst",INST[0],i=>chart("c-ql-year",{type:"bar",data:{labels:Q.years,datasets:Q.quartiles.map((k,n)=>({label:k,data:Q.by_year[i][k],backgroundColor:tq[n],borderColor:css("--surface"),borderWidth:{top:2},borderRadius:0}))},
+    options:baseOpts({scales:{x:{stacked:true},y:{stacked:true,title:{display:true,text:"journal papers",color:css("--muted")}}}})}),false);
+  const bandEl=document.getElementById("ql-band"); let band="if_gt10";
+  const drawHi=()=>{ bandEl.innerHTML=`<div class="seg">`+[["if_gt10","IF ≥10"],["if_gt5","IF ≥5"]].map(([k,l])=>`<button data-k="${k}" class="${k===band?"on":""}">${l}</button>`).join("")+`</div>`;
+    bandEl.querySelectorAll("button").forEach(b=>b.onclick=()=>{band=b.dataset.k; drawHi();});
+    chart("c-ql-hi",{type:"line",data:{labels:Q.years,datasets:INST.map(i=>({label:AB[i],data:Q.by_year[i][band],borderColor:col(i),backgroundColor:col(i),borderWidth:2,pointRadius:3,tension:.25}))},
+      options:baseOpts({scales:{y:{title:{display:true,text:"journal papers",color:css("--muted")}}}})}); };
+  drawHi();
+  const J=[]; INST.forEach(i=>(Q.top_high_if_journals[i]||[]).forEach(r=>J.push({...r,i})));
+  table("t-ql-j",[{h:"Institute",v:r=>AB[r.i],f:r=>`<span class="swatch" style="background:${col(r.i)}"></span>${AB[r.i]}`},{h:"Journal",v:r=>r.journal},{h:"IF",v:r=>r.if,num:true},{h:"Quartile",v:r=>r.quartile||"–"},{h:"Papers",v:r=>r.papers,num:true}],J,{sort:4});
+  table("t-ql-qi",[{h:"Quartile",v:r=>r},{h:"Median IF",v:r=>Q.if_by_quartile[r].median_if??-1,num:true,f:r=>Q.if_by_quartile[r].median_if??"–"},{h:"Share with IF ≥5",v:r=>Q.if_by_quartile[r].share_if_gt5_pct,num:true,f:r=>Q.if_by_quartile[r].share_if_gt5_pct+"%"}],["Q1","Q2","Q3","Q4"]);
+  document.getElementById("ql-qi-note").innerHTML=`<b>Reading:</b> only ${Q.if_by_quartile.Q1.share_if_gt5_pct}% of Q1 journal papers are in journals with IF ≥5, so "Q1" and "IF ≥5" are not interchangeable: Q1 rewards being high within a field, IF rewards fields that cite a lot (medicine, materials) over those that cite less (mathematics, computer science).`;
+  const F=[]; INST.forEach(i=>(Q.top_faculty[i]||[]).forEach(r=>F.push({...r,i})));
+  table("t-ql-f",[{h:"Name",v:r=>r.name,f:r=>`<span class="swatch" style="background:${col(r.i)}"></span>${esc(r.name)}`},{h:"Institute",v:r=>AB[r.i]},{h:"Role",v:r=>r.role,f:r=>roleBadge(r.role)},
+    {h:"IF ≥10",v:r=>r.if10,num:true},{h:"IF ≥5",v:r=>r.if5,num:true},{h:"Q1",v:r=>r.q1,num:true},{h:"Q2",v:r=>r.q2,num:true},{h:"Q3",v:r=>r.q3,num:true},{h:"Q4",v:r=>r.q4,num:true}],F,{sort:3,limit:30});
+}
+function renderRoles(){
+  const Rr=EXT.roles; if(!Rr) return;
+  const cov=Rr.coverage, order=Rr.order;
+  const tot=k=>INST.reduce((a,i)=>a+(cov[i].roles[k]||0),0);
+  document.getElementById("rl-tiles").innerHTML=[
+    tile("Authors on a faculty list",fmt(tot("Faculty")+tot("Adjunct / visiting faculty")),INST.map(i=>AB[i]+" "+(cov[i].roles["Faculty"]+cov[i].roles["Adjunct / visiting faculty"])).join(" · ")),
+    tile("Authors on a student list",fmt(tot("PhD scholar")+tot("Student (MS / M.Tech / B.Tech)")),INST.filter(i=>cov[i].has_scholar_list).map(i=>AB[i]).join(", ")+" publish student lists"),
+    tile("Likely students (heuristic)",fmt(tot("Likely student / researcher")),"≥2 papers, not a PI pattern"),
+    tile("Links between institutes made by students",(()=>{const m=Rr.edge_role_mix.between_institutes, t=Rr.edge_role_mix.between_institutes_total||1; const s=Object.entries(m).filter(([k])=>k.includes("student")).reduce((a,[,v])=>a+v,0); return Math.round(100*s/t)+"%";})(),"at least one end is a listed or likely student")].join("");
+  const rows=order.map(r=>({r}));
+  table("t-rl",[{h:"Role",v:x=>x.r,f:x=>roleBadge(x.r)},...INST.map(i=>({h:AB[i],v:x=>cov[i].roles[x.r]||0,num:true,f:x=>fmt(cov[i].roles[x.r]||0)})),{h:"Total",v:x=>tot(x.r),num:true,f:x=>fmt(tot(x.r))}],rows);
+  document.getElementById("rl-cov").innerHTML="<b>Coverage:</b> "+INST.map(i=>{const c=cov[i]; return `${AB[i]}: ${c.has_roster?`${c.faculty_listed} faculty listed, ${c.faculty_listed_with_papers} of them found as authors`:"no faculty list"}${c.has_scholar_list?`; ${fmt(c.scholars_listed)} PhD + ${fmt(c.students_listed)} MS/M.Tech/B.Tech listed`:"; no student list published"}`;}).join(" · ")+
+    `. The old heuristic ("core faculty": ≥5 papers in ≥3 years, last author ≥30%) agrees with the lists for ${INST.map(i=>AB[i]+" "+(cov[i].heuristic_core_on_list_pct??"–")+"%").join(", ")} of the authors it flags; the rest are mostly former faculty, postdocs or senior PhD students.`;
+  const RC=["--t1","--t3","--s4","--s7","--s3","--s2","--other"].map(css);
+  stack100("c-rl-mix",INST.map(i=>AB[i]),order.map((r,k)=>({label:r,data:INST.map(i=>{const n=Object.values(cov[i].roles).reduce((a,b)=>a+b,0)||1; return +(100*(cov[i].roles[r]||0)/n).toFixed(1);})})),RC);
+  const ks=["faculty–faculty","faculty–student","student–student","faculty–occasional","occasional–student","occasional–occasional"];
+  const em=Rr.edge_role_mix, ta=Object.values(em.all).reduce((a,b)=>a+b,0)||1, tb=em.between_institutes_total||1;
+  chart("c-rl-edge",{type:"bar",data:{labels:ks,datasets:[{label:"all links",data:ks.map(k=>+(100*(em.all[k]||0)/ta).toFixed(1)),backgroundColor:css("--t2"),borderRadius:4},
+    {label:"links between institutes",data:ks.map(k=>+(100*(em.between_institutes[k]||0)/tb).toFixed(1)),backgroundColor:css("--s5"),borderRadius:4}]},
+    options:baseOpts({scales:{y:{ticks:{callback:v=>v+"%"}}},plugins:{tooltip:{callbacks:{label:c=>`${c.dataset.label}: ${c.raw}%`}}}})});
+  const nb=Rr.network_by_role;
+  table("t-rl-net",[{h:"Role",v:r=>r,f:r=>roleBadge(r)},{h:"Authors",v:r=>nb[r].authors,num:true,f:r=>fmt(nb[r].authors)},{h:"Mean degree",v:r=>nb[r].mean_degree,num:true},{h:"Median degree",v:r=>nb[r].median_degree,num:true},
+    {h:"Betweenness share",v:r=>nb[r].betweenness_share_pct,num:true,f:r=>nb[r].betweenness_share_pct+"%"},{h:"In GCC",v:r=>nb[r].in_gcc_pct,num:true,f:r=>nb[r].in_gcc_pct+"%"},
+    {h:"Ends of inter-institute links",v:r=>Rr.inter_link_endpoints_by_role[r]||0,num:true}],order);
+  const tb50=Rr.top50_brokers_by_role||{};
+  document.getElementById("rl-net-note").innerHTML=`<b>Reading:</b> of the 50 strongest brokers (highest betweenness), ${order.filter(r=>tb50[r]).map(r=>`${tb50[r]} are ${r.toLowerCase()}`).join(", ")}. Faculty hold the network together; students mostly attach to one faculty member.`;
+  const fn=Rr.faculty_network;
+  table("t-rl-fn",[{h:"Measure",v:r=>r[0]},{h:"Value",v:r=>r[1],num:true,f:r=>r[2]||fmt(r[1])}],[
+    ["Listed faculty (nodes)",fn.nodes],["Faculty–faculty links",fn.edges],["Components",fn.components],["Faculty with no faculty co-author",fn.isolated],
+    ["Largest component",fn.giant_nodes,`${fmt(fn.giant_nodes)} (${fn.giant_share_pct}%)`],["Links between institutes",fn.inter_institute_links],["Average clustering",fn.avg_clustering],
+    ["Extra faculty pairs joined only through a shared student",fn.extra_pairs_via_shared_student],["…of which between institutes",fn.extra_inter_institute_pairs_via_student]]);
+  document.getElementById("rl-fn-note").innerHTML=`<b>Reading:</b> the faculty-only network is far more fragmented than the full one: students (and co-supervised theses) are the glue that connects faculty groups.`;
+  const src=Rr.sources||{};
+  document.getElementById("rl-src").innerHTML=Object.entries(src).map(([f,u])=>`<li><b>${esc(f)}</b>: ${u.slice(0,4).map(x=>`<a href="${esc(x)}" target="_blank" rel="noopener">${esc(x.replace(/^https?:\/\//,""))}</a>`).join(", ")}${u.length>4?` and ${u.length-4} more`:""}</li>`).join("")+
+    `<li>Matching rule: same surname, compatible first name (equal, or an initial matching it — not accepted for very common surnames such as Kumar or Singh) and no contradicting middle names; a name that fits two listed people is left unmatched.</li><li>Lists show <b>current</b> people (IIITD also lists graduated PhDs and students). Former faculty and graduated students of other institutes fall into the heuristic roles.</li>`;
+}
+function renderGcc(){
+  const g=EXT.gcc; if(!g) return;
+  document.getElementById("gc-tiles").innerHTML=[
+    tile("Authors in the GCC",fmt(g.gcc_nodes),`${g.gcc_share_pct}% of ${fmt(g.nodes)} authors`),
+    tile("Links in the GCC",g.gcc_edge_share_pct+"%",`${fmt(g.gcc_edges)} of ${fmt(g.edges)} links`),
+    tile("Other components",fmt(g.components-1),`2nd largest: ${fmt(g.second_nodes)} authors · 3rd: ${fmt(g.third_nodes)}`),
+    tile("Papers touching the GCC",g.papers_touching_gcc_pct+"%","≥1 author inside the GCC")].join("");
+  chart("c-gc-inst",{type:"bar",data:{labels:INST.map(i=>AB[i]),datasets:[
+      {label:"in the GCC of the full network",data:INST.map(i=>g.by_inst[i].in_gcc_pct),backgroundColor:INST.map(col),borderRadius:4},
+      {label:"in the GCC of its own subgraph",data:INST.map(i=>g.own_subgraph_gcc_pct[i]),backgroundColor:INST.map(i=>col(i)+"66"),borderRadius:4}]},
+    options:baseOpts({scales:{y:{max:100,ticks:{callback:v=>v+"%"}}}})});
+  chart("c-gc-out",{type:"bar",data:{labels:g.outside_gcc.bins,datasets:[{label:"authors",data:g.outside_gcc.authors,backgroundColor:css("--t3"),borderRadius:4}]},
+    options:baseOpts({plugins:{legend:{display:false},tooltip:{callbacks:{label:c=>`${fmt(c.raw)} authors in ${fmt(g.outside_gcc.components[c.dataIndex])} components`}}},scales:{x:{title:{display:true,text:"component size (authors)",color:css("--muted")}}}})});
+  const G=g.growth;
+  chart("c-gc-grow",{type:"bar",data:{labels:G.years,datasets:INST.map(i=>({label:AB[i],data:G.gcc_by_inst[i],backgroundColor:col(i),borderColor:css("--surface"),borderWidth:{top:1},borderRadius:0}))},
+    options:baseOpts({scales:{x:{stacked:true},y:{stacked:true,title:{display:true,text:"authors in the GCC",color:css("--muted")}}},
+      plugins:{tooltip:{callbacks:{footer:it=>{const k=it[0].dataIndex; return `GCC = ${G.gcc_pct[k]}% of ${fmt(G.authors[k])} authors · ${G.institutes_in_gcc[k]} institutes with ≥5 authors in it`;}}}}})});
+  table("t-gc",[{h:"Measure",v:r=>r[0]},{h:"GCC",v:r=>r[1],num:true},{h:"Rest of network",v:r=>r[2],num:true}],[
+    ["Mean degree",g.gcc_mean_degree,g.outside_mean_degree],["Average clustering",g.gcc_clustering,"–"],["Average path length",g.gcc_avg_path_length??"–","–"],["Diameter",g.gcc_diameter??"–","–"],
+    ["Citation network: largest weak component",`${fmt(g.citation_wcc.wcc_papers)} papers (${g.citation_wcc.wcc_share_pct}%)`,`${fmt(g.citation_wcc.components-1)} other components`]]);
+  table("t-gc-role",[{h:"Role",v:r=>r,f:r=>roleBadge(r)},{h:"Authors",v:r=>g.by_role[r].authors,num:true,f:r=>fmt(g.by_role[r].authors)},{h:"In GCC",v:r=>g.by_role[r].in_gcc_pct,num:true,f:r=>g.by_role[r].in_gcc_pct+"%"}],Object.keys(g.by_role));
+  const lo=INST.slice().sort((a,b)=>g.by_inst[a].in_gcc_pct-g.by_inst[b].in_gcc_pct)[0];
+  document.getElementById("gc-note").innerHTML=`<b>Reading:</b> the GCC holds ${g.gcc_share_pct}% of all authors and ${g.gcc_edge_share_pct}% of links; everything else is ${fmt(g.components-1)} small groups, mostly pairs and isolated authors (one-off papers). ${AB[lo]} has the lowest share of its authors inside the shared GCC (${g.by_inst[lo].in_gcc_pct}%). Path length and diameter are measured inside the GCC only, because they are undefined between components.`;
+}
+function renderMultilayer(){
+  const M=EXT.multilayer; if(!M) return;
+  const L=M.layers, co=L["co-authorship"], ci=L["citation"], ov=M.overlap;
+  // diagram: two stacked layers with the same nodes
+  const svg=d3.select("#ml-diagram"); svg.selectAll("*").remove();
+  const pts=[[90,0],[170,-14],[250,8],[330,-10],[410,6],[490,-12],[570,4],[650,-8]];
+  const layer=(y,name,edges,c)=>{ const gg=svg.append("g");
+    gg.append("path").attr("d",`M40,${y+28} L110,${y-28} L740,${y-28} L670,${y+28} Z`).attr("fill",css("--surface-2")).attr("stroke",css("--border"));
+    edges.forEach(([a,b])=>gg.append("line").attr("x1",pts[a][0]).attr("y1",y+pts[a][1]).attr("x2",pts[b][0]).attr("y2",y+pts[b][1]).attr("stroke",c).attr("stroke-width",2));
+    pts.forEach(p=>gg.append("circle").attr("cx",p[0]).attr("cy",y+p[1]).attr("r",6).attr("fill",css("--surface")).attr("stroke",css("--text-2")).attr("stroke-width",1.5));
+    gg.append("text").attr("x",748).attr("y",y+4).attr("fill",css("--text-2")).attr("font-size",12).attr("text-anchor","end").text(name); };
+  pts.forEach(p=>svg.append("line").attr("x1",p[0]).attr("y1",50+p[1]).attr("x2",p[0]).attr("y2",150+p[1]).attr("stroke",css("--grid")).attr("stroke-dasharray","3 3"));
+  layer(50,"co-authorship",[[0,1],[1,2],[2,3],[4,5],[5,6]],css("--s1"));
+  layer(150,"citation",[[0,2],[1,2],[3,4],[5,7],[2,6]],css("--s4"));
+  svg.append("text").attr("x",12).attr("y",104).attr("fill",css("--muted")).attr("font-size",11).text("same author");
+  document.getElementById("ml-tiles").innerHTML=[
+    tile("Pairs linked in both layers",fmt(ov.both),`${ov.citation_edges_between_coauthors_pct}% of citation links join co-authors`),
+    tile("Overlap vs random",ov.overlap_ratio_vs_random+"×",`expected ${fmt(ov.expected_both_random)} if citation partners were random (same degrees)`),
+    tile("Degree correlation",M.degree_spearman,"Spearman ρ, co-author vs citation degree"),
+    tile("Mutually connected GCC",fmt(M.mutual_gcc),`${M.mutual_gcc_pct}% of authors connected in both layers at once (aggregate GCC ${M.aggregate_gcc_pct}%)`)].join("");
+  table("t-ml",[{h:"Measure",v:r=>r[0]},{h:"Co-authorship",v:r=>r[1],num:true},{h:"Citation",v:r=>r[2],num:true}],[
+    ["Links",fmt(co.edges),fmt(ci.edges)],["Authors with ≥1 link",`${fmt(co.active_nodes)} (${co.active_pct}%)`,`${fmt(ci.active_nodes)} (${ci.active_pct}%)`],
+    ["Mean degree (active authors)",co.mean_degree,ci.mean_degree],["Largest component",`${fmt(co.gcc_nodes)} (${co.gcc_pct_of_all}%)`,`${fmt(ci.gcc_nodes)} (${ci.gcc_pct_of_all}%)`],
+    ["Links between institutes",`${fmt(co.inter_institute_edges)} (${co.inter_institute_pct}%)`,`${fmt(ci.inter_institute_edges)} (${ci.inter_institute_pct}%)`],
+    ["Institute assortativity",co.institution_assortativity,ci.institution_assortativity]]);
+  chart("c-ml-ov",{type:"bar",data:{labels:["co-authorship only","both layers","citation only"],datasets:[{label:"author pairs",data:[ov.only_coauthor,ov.both,ov.only_citation],backgroundColor:[css("--s1"),css("--s7"),css("--s4")],borderRadius:4}]},
+    options:baseOpts({plugins:{legend:{display:false}}})});
+  document.getElementById("ml-ov-note").innerHTML=`<b>Reading:</b> ${ov.citation_edges_between_coauthors_pct}% of citation links are between people who also wrote together — ${ov.overlap_ratio_vs_random}× what random citing would give — and only ${ov.coauthor_pairs_that_cite_pct}% of co-author pairs cite each other's other work. Between institutes, ${fmt(ov.inter_institute_citation_only)} citation links connect authors who never wrote together, against ${fmt(co.inter_institute_edges)} co-author links: the institutes read each other more than they collaborate. Edge Jaccard = ${ov.jaccard}.`;
+  const P=M.participation;
+  chart("c-ml-p",{type:"bar",data:{labels:P.hist.map((_,k)=>(k/10).toFixed(1)+"–"+((k+1)/10).toFixed(1)),datasets:[{label:"authors",data:P.hist,backgroundColor:P.hist.map((_,k)=>k<3?css("--t3"):k>6?css("--s7"):css("--t2")),borderRadius:3}]},
+    options:baseOpts({plugins:{legend:{display:false}},scales:{x:{title:{display:true,text:`participation coefficient · focused ${P.focused_pct}% · mixed ${P.mixed_pct}% · multiplex ${P.multiplex_pct}%`,color:css("--muted")}}}})});
+  table("t-ml-hub",[{h:"Name",v:r=>r.name,f:r=>`<span class="swatch" style="background:${col(r.institution)}"></span>${esc(r.name)}`},{h:"Institute",v:r=>AB[r.institution]},
+    {h:"Co-author links",v:r=>r.coauthor_degree,num:true},{h:"Citation links",v:r=>r.citation_degree,num:true},{h:"P",v:r=>r.participation,num:true}],M.top_multiplex_hubs);
+  table("t-ml-inst",[{h:"Pair",v:r=>r.pair},{h:"Co-author links",v:r=>r.coauthor_links,num:true},{h:"Citations",v:r=>r.citations,num:true},
+    {h:"Shared partners (Jaccard)",v:r=>r.shared_partners_jaccard,num:true},{h:"Topic similarity (Jaccard)",v:r=>r.topic_jaccard??-1,num:true,f:r=>r.topic_jaccard??"–"}],M.institute_multiplex,{sort:2});
+  const sp=M.institute_layer_spearman||{};
+  document.getElementById("ml-inst-note").innerHTML=`<b>Layer agreement</b> across the ${M.institute_multiplex.length} institute pairs (Spearman ρ): `+Object.entries(sp).map(([k,v])=>`${k.replace(/_/g," ").replace("~"," vs ")} ${v}`).join(" · ")+". A high value means pairs that are close in one layer are also close in the other.";
+}
+function renderAnomaly(){
+  const A_=EXT.anomalies; if(!A_) return; const S=A_.saveetha;
+  document.getElementById("an-context").innerHTML=`<b>Context.</b> Saveetha Institute of Medical and Technical Sciences (Chennai) was the subject of a 2023 investigation by <i>Science</i> and Retraction Watch into papers that systematically cite Saveetha faculty (<a href="https://theprint.in/science/chennai-dental-college-used-self-citations-to-ace-rankings-finds-investigation-by-journal-science/1618544" target="_blank" rel="noopener">report ↗</a>). This page only describes citation patterns in OpenAlex; it makes no claim about the intent of any author.`;
+  const svRow=A_.citing_institutions.find(r=>r.id==="I85461943")||{};
+  const totLinks=svRow.citation_links??Object.values(S.links_by_inst).reduce((a,b)=>a+b,0), totShared=Object.values(S.shared_papers_by_inst).reduce((a,b)=>a+b,0);
+  const yi=S.years.indexOf(2022), since=S.citing_works_by_year.slice(yi).reduce((a,b)=>a+b,0), all=S.citing_works_by_year.reduce((a,b)=>a+b,0);
+  document.getElementById("an-tiles").innerHTML=[
+    tile("Rank among citing institutions",S.rank_by_links?"#"+S.rank_by_links:"–","by citation links to the five IIITs"),
+    tile("Citation links",fmt(totLinks),`from ${fmt(S.citing_works)} Saveetha works · by institute (a paper shared by two counts for both): ${INST.filter(i=>S.links_by_inst[i]).map(i=>AB[i]+" "+S.links_by_inst[i]).join(" · ")}`),
+    tile("Co-authored papers",fmt(totShared),`${(totLinks/Math.max(totShared,1)).toFixed(0)} citation links per joint paper`),
+    tile("Citing works since 2022",Math.round(100*since/Math.max(all,1))+"%",`${fmt(since)} of ${fmt(all)}`),
+    tile("Papers mostly cited by Saveetha",fmt(S.papers_majority_saveetha),"≥10 citations, ≥50% from Saveetha works")].join("");
+  chart("c-an-year",{type:"bar",data:{labels:S.years,datasets:[{label:"Saveetha share of Indian citing works (%)",data:S.years.map((y,k)=>+(100*S.citing_works_by_year[k]/Math.max(S.all_indian_citing_works_by_year[k],1)).toFixed(2)),backgroundColor:css("--s8"),borderRadius:4}]},
+    options:baseOpts({plugins:{legend:{display:false},tooltip:{callbacks:{label:c=>`${c.raw}% (${S.citing_works_by_year[c.dataIndex]} of ${fmt(S.all_indian_citing_works_by_year[c.dataIndex])} works)`}}},scales:{y:{ticks:{callback:v=>v+"%"}}}})});
+  table("t-an-sens",[{h:"Institute",v:r=>r,f:r=>`<span class="swatch" style="background:${col(r)}"></span>${AB[r]}`},{h:"Citations",v:r=>S.sensitivity[r].citations,num:true,f:r=>fmt(S.sensitivity[r].citations)},
+    {h:"Without Saveetha",v:r=>S.sensitivity[r].citations_without,num:true,f:r=>fmt(S.sensitivity[r].citations_without)},{h:"Drop",v:r=>S.sensitivity[r].drop_pct,num:true,f:r=>S.sensitivity[r].drop_pct+"%"},
+    {h:"h-index",v:r=>S.sensitivity[r].h,num:true},{h:"h without",v:r=>S.sensitivity[r].h_without,num:true}],INST.slice());
+  table("t-an-inst",[{h:"Citing institution",v:r=>r.name,f:r=>(r.id==="I85461943"?"<b>":"")+esc(r.name)+(r.id==="I85461943"?"</b>":"")},{h:"Citing works",v:r=>r.citing_works,num:true},{h:"Citation links",v:r=>r.citation_links,num:true},
+    {h:"Papers cited",v:r=>r.papers_cited,num:true},{h:"Co-authored papers",v:r=>r.shared_papers,num:true},{h:"Links per co-authored paper",v:r=>r.links_per_shared_paper,num:true},{h:"z",v:r=>r.z_links_per_shared,num:true},
+    {h:"Top-3 papers' share",v:r=>r.top3_share_pct,num:true,f:r=>r.top3_share_pct+"%"},{h:"Since 2022",v:r=>r.since_2022_pct,num:true,f:r=>r.since_2022_pct+"%"},{h:"Dominated",v:r=>r.papers_dominated,num:true},
+    {h:"Flag",v:r=>r.flag?1:0,f:r=>r.flag?`<span class="rb rb-st">flag</span>`:""}],A_.citing_institutions,{sort:2,limit:25});
+  table("t-an-pap",[{h:"Paper",v:r=>r.title,f:r=>esc(r.title)+(r.doi?` <a href="https://doi.org/${esc(r.doi)}" target="_blank" rel="noopener">↗</a>`:"")},{h:"Year",v:r=>r.year,num:true},{h:"Institute",v:r=>r.institution,f:r=>r.institution.split("; ").map(i=>AB[i]||i).join(", ")},
+    {h:"Citations",v:r=>r.citations,num:true},{h:"From Saveetha",v:r=>r.saveetha,num:true},{h:"Share",v:r=>r.share_pct,num:true,f:r=>r.share_pct+"%"}],S.top_papers,{sort:4,limit:12});
+  table("t-an-auth",[{h:"Name",v:r=>r.name,f:r=>`<span class="swatch" style="background:${col(r.institution)}"></span>${esc(r.name)}`},{h:"Role",v:r=>r.role,f:r=>roleBadge(r.role)},{h:"Citations",v:r=>r.citations,num:true,f:r=>fmt(r.citations)},
+    {h:"From Saveetha",v:r=>r.saveetha_citations,num:true},{h:"Share",v:r=>r.saveetha_share_pct,num:true,f:r=>r.saveetha_share_pct+"%"},{h:"h",v:r=>r.h,num:true},{h:"h without",v:r=>r.h_without,num:true}],S.affected_authors,{sort:3});
+  const LV=A_.legit_vs_boosting;
+  if(LV&&LV.saveetha_tests){
+    table("t-an-tests",[{h:"Test",v:r=>r.test},{h:"Saveetha",v:r=>r.saveetha,num:true,f:r=>r.saveetha+r.unit},{h:"Other top citers (median)",v:r=>r.others_median,num:true,f:r=>r.others_median+r.unit},
+      {h:"Result",v:r=>r.red_flag?1:0,f:r=>r.red_flag?`<span class="rb rb-st">red flag</span>`:`<span class="rb rb-ok">normal</span>`}],LV.saveetha_tests);
+    table("t-an-cmp",[{h:"Citing institution",v:r=>r.name,f:r=>(r.is_saveetha?"<b>":"")+esc(r.name)+(r.is_saveetha?"</b>":"")},{h:"Citing works",v:r=>r.citing_works,num:true},
+      {h:"Share of Indian output",v:r=>r.share_of_indian_output_pct??-1,num:true,f:r=>r.share_of_indian_output_pct!=null?r.share_of_indian_output_pct+"%":"–"},
+      {h:"Share of works citing us",v:r=>r.share_of_our_citing_works_pct,num:true,f:r=>r.share_of_our_citing_works_pct+"%"},
+      {h:"Over-representation",v:r=>r.over_representation??-1,num:true,f:r=>r.over_representation!=null?r.over_representation+"×":"–"},
+      {h:"Citing authors",v:r=>r.distinct_citing_authors,num:true},{h:"Top-5 authors' share",v:r=>r.top5_authors_share_pct,num:true,f:r=>r.top5_authors_share_pct+"%"},
+      {h:"From co-author circle",v:r=>r.links_from_coauthors_pct,num:true,f:r=>r.links_from_coauthors_pct+"%"},{h:"Same field",v:r=>r.same_field_pct,num:true,f:r=>r.same_field_pct+"%"}],LV.institutions,{sort:1});
+    const nf=LV.saveetha_red_flags, nt=LV.saveetha_tests.length, me=LV.institutions.find(r=>r.is_saveetha)||{}, m=LV.others_median;
+    const sizeT=LV.saveetha_tests.find(t=>t.test.startsWith("Citing share")), fieldT=LV.saveetha_tests.find(t=>t.test.startsWith("Citing paper")),
+          topT=LV.saveetha_tests.find(t=>t.test.startsWith("Share of citing")), circT=LV.saveetha_tests.find(t=>t.test.startsWith("Citations from"));
+    const y0=S.citing_works_by_year.findIndex(v=>v>=10), maxDrop=Math.max(...INST.map(i=>S.sensitivity[i].drop_pct));
+    document.getElementById("an-verdict").innerHTML=`<b>Verdict from the data (${nf} of ${nt} tests flagged):</b> `+
+      (sizeT&&!sizeT.red_flag?`Saveetha's citations to the IIITs are <b>explained by its size</b>: it writes ${me.share_of_indian_output_pct}% of all Indian papers 2016–2026 and supplies ${me.share_of_our_citing_works_pct}% of the Indian works citing the five IIITs (${me.over_representation}×; the other large citers are at ${m.over_representation}×). It is <b>not a citation circle aimed at the IIITs</b>: ${circT?circT.saveetha:"–"}% of its citations come from the cited authors' co-author circle (others ${circT?circT.others_median:"–"}%). `
+        :`Saveetha cites the IIITs ${me.over_representation}× more than its size predicts (others ${m.over_representation}×). `)+
+      `What <i>is</i> unusual: it cites heavily but barely collaborates (${fmt(totShared)} joint papers), its citing began only in ${y0>=0?S.years[y0]:"–"} and grew fast, fewer of its citing papers are in the cited paper's field (${fieldT?fieldT.saveetha:"–"}% vs ${fieldT?fieldT.others_median:"–"}%), and its 5 most active citing authors write ${topT?topT.saveetha:"–"}% of its citing works (others ${topT?topT.others_median:"–"}%). `+
+      `Its high rank in many lists comes from sheer volume — Saveetha is one of India's largest publishers — and the 2023 <i>Science</i> investigation concerned Saveetha citing <i>its own</i> faculty, which these tests do not measure. Effect on our results: at most ${maxDrop}% of an institute's citations. Citation data cannot show intent.`;
+  }
+  const flagged=A_.citing_institutions.filter(r=>r.flag).map(r=>r.name);
+  document.getElementById("an-note").innerHTML=`<b>Reading:</b> ${esc(S.name)} cites the five IIITs ${fmt(totLinks)} times but co-authored only ${fmt(totShared)} of their papers. ${S.concentration_top10_pct}% of its citation links go to just 10 papers, and ${S.links_to_papers_with_saveetha_coauthor_pct}% go to papers that themselves have a Saveetha co-author (median ${S.other_top_citers_links_to_coauthored_median_pct}% for the other top citing institutions) — so Saveetha is <i>not</i> mainly citing papers its own people co-wrote; what stands out is citing at scale with almost no collaboration. ${flagged.length>1?`Other flagged institutions: ${flagged.filter(n=>!/Saveetha/.test(n)).slice(0,5).map(esc).join(", ")}.`:""} <b>Effect on our results:</b> removing these citations changes the institutes' totals by ${INST.map(i=>AB[i]+" "+S.sensitivity[i].drop_pct+"%").join(", ")}; partner rankings by citations should be read with Saveetha set aside (rank among each institute's citing partners: ${INST.map(i=>AB[i]+" "+(S.rank_among_citing_partners[i]??"–")).join(", ")}).`;
+}
+
 const rendered={};
 function show(p){
   document.querySelectorAll(".page").forEach(x=>x.classList.toggle("on",x.id==="p-"+p));
@@ -2334,7 +2637,9 @@ function show(p){
     else if(p==="explorer") renderExplorer(); else if(p==="course") renderCourse();
     else if(p==="pubs") renderPubsPage(); else if(p==="faculty") renderFaculty();
     else if(p==="graphx") renderGraphx(); else if(p==="audit") renderAudit();
-    else if(p==="paths") renderPaths(); else if(p==="growth") renderGrowth(); else renderInst(p); }
+    else if(p==="paths") renderPaths(); else if(p==="growth") renderGrowth();
+    else if(p==="quality") renderQuality(); else if(p==="roles") renderRoles(); else if(p==="gcc") renderGcc();
+    else if(p==="multilayer") renderMultilayer(); else if(p==="anomaly") renderAnomaly(); else renderInst(p); }
   if(!location.hash.startsWith("#author=")) history.replaceState(null,"","#"+p);
   if(["graphx","audit"].includes(p)) setAdv(true);
   try{ localStorage.setItem("g10-page",p); }catch(e){}
@@ -2363,9 +2668,9 @@ window.addEventListener("hashchange",()=>{ const p=location.hash.slice(1);
 
 
 def build_html(D):
-    nav = "".join(f'<button class="nav" data-p="{k}"><span class="dot" style="background:var(--s{n + 1})"></span>{i}</button>'
+    nav = "".join(f'<button class="nav" data-p="{k}"><span class="dot" style="background:var(--s{INST_SLOT[i]})"></span>{i}</button>'
                   for n, (i, k) in enumerate(KEYS.items()))
-    pages = "".join(INST_PAGE.replace("%KEY%", k).replace("%NAME%", i).replace("%SV%", f"s{n + 1}")
+    pages = "".join(INST_PAGE.replace("%KEY%", k).replace("%NAME%", i).replace("%SV%", f"s{INST_SLOT[i]}")
                     .replace("%FULL%", C.INST_FULL_NAMES[i]).replace("%OA%", C.INSTITUTIONS[i][0])
                     .replace("%ROR%", C.INSTITUTIONS[i][1])
                     for n, (i, k) in enumerate(KEYS.items()))
@@ -2373,7 +2678,8 @@ def build_html(D):
             .replace("%CITEN%", str(CITE_GRAPH_NODES)).replace("%EXPN%", str(EXPLORER_PER_INST))
             .replace("%NPEOPLE%", f"{len((D.get('people') or {}).get('a', [])):,}")
             .replace("%NPAPERS%", f"{len((D.get('people') or {}).get('p', [])):,}")
-            .replace("%Y0%", str(C.START_YEAR)).replace("%Y1%", str(C.END_YEAR)))
+            .replace("%Y0%", str(C.START_YEAR)).replace("%Y1%", str(C.END_YEAR))
+            .replace("%PARTIAL%", str(C.PARTIAL_YEAR)))
     data = json.dumps(D, ensure_ascii=False,
                       default=lambda v: v.item() if hasattr(v, "item") else str(v)).replace("</", "<\\/")
     return f"""<!DOCTYPE html>
@@ -2382,7 +2688,7 @@ def build_html(D):
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Group 10 Research Map</title>
-<meta name="description" content="DPCN 2026 Group 10 - research output, citation and co-authorship networks of IIIT Allahabad, ABV-IIITM Gwalior and IIIT Bangalore (2016-2026)">
+<meta name="description" content="DPCN 2026 Group 10 - research output, citation and co-authorship networks of IIIT Allahabad, ABV-IIITM Gwalior, IIIT Bangalore, IIIT Hyderabad and IIIT Delhi (2016-2026)">
 <link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Newsreader:ital,opsz,wght@0,6..72,400;0,6..72,500;1,6..72,400&display=swap" rel="stylesheet">
 <style>{CSS}</style>

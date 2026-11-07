@@ -54,9 +54,26 @@ import group10_common as C
 from part3_statistics import COLORS, INK2, save
 
 RNG = np.random.default_rng(42)
-ABBR = {"IIIT Allahabad": "IIITA", "ABV-IIITM Gwalior": "ABV", "IIIT Bangalore": "IIITB"}
+ABBR = C.INST_ABBR
 PAIRS = list(combinations(C.INST_NAMES, 2))
 pair_key = lambda a, b: f"{ABBR[a]}-{ABBR[b]}"
+# above this many nodes, betweenness and all-pairs distances use a fixed random
+# sample of source nodes (seeded); below it they are exact
+EXACT_LIMIT = 6000
+SAMPLE_SOURCES = 2000
+
+
+def betweenness(G):
+    if G.number_of_nodes() > EXACT_LIMIT:
+        return nx.betweenness_centrality(G, k=SAMPLE_SOURCES, seed=42)
+    return nx.betweenness_centrality(G)
+
+
+def path_sources(gc):
+    nodes = sorted(gc)
+    if len(nodes) <= EXACT_LIMIT:
+        return nodes, True
+    return list(np.random.default_rng(42).choice(nodes, SAMPLE_SOURCES, replace=False)), False
 
 
 # ═════════════════════════════════════════════
@@ -119,8 +136,22 @@ def undirected_properties(G, exact_paths=True):
            "avg_clustering": round(nx.average_clustering(G), 3), "transitivity": round(nx.transitivity(G), 3),
            "degree_assortativity": round(nx.degree_assortativity_coefficient(G), 3)}
     if gc.number_of_nodes() > 2 and exact_paths:
-        out["giant_avg_path_length"] = round(nx.average_shortest_path_length(gc), 2)
-        out["giant_diameter"] = nx.diameter(gc)
+        src, exact = path_sources(gc)
+        if exact:
+            out["giant_avg_path_length"] = round(nx.average_shortest_path_length(gc), 2)
+            out["giant_diameter"] = nx.diameter(gc)
+        else:
+            tot = cnt = 0
+            ecc = 0
+            for x in src:
+                d = nx.single_source_shortest_path_length(gc, x)
+                tot += sum(d.values())
+                cnt += len(d) - 1
+                ecc = max(ecc, max(d.values()))
+            out["giant_avg_path_length"] = round(tot / cnt, 2)
+            out["giant_diameter"] = max(ecc, nx.approximation.diameter(gc, seed=42))
+            out["path_note"] = (f"path length from {len(src):,} random source authors (all targets); "
+                                "diameter = largest eccentricity found (lower bound)")
     return out, gc
 
 
@@ -154,7 +185,7 @@ def per_institution(G, at):
         p["communities_10plus"] = sum(1 for c in comms if len(c) >= 10)
         p["modularity"] = round(nx.community.modularity(H, comms, weight="weight"), 3)
         p["core_faculty"] = sum(1 for _, d in H.nodes(data=True) if d["core"])
-        bet = nx.betweenness_centrality(H)
+        bet = betweenness(H)
         deg = dict(H.degree())
         p["top_degree"] = [{"name": H.nodes[n]["name"], "degree": deg[n]}
                            for n in sorted(deg, key=lambda n: (-deg[n], n))[:5]]
@@ -209,7 +240,7 @@ def mixing(G, o):
             "inter_papers_by_period": {"2016-2020": int((years <= 2020).sum()), "2021-2026": int((years > 2020).sum())},
             "inter_links_expected_total": round(sum(r["expected_configuration_model"] for r in rows), 1),
             "inter_share_pct": round(total_inter / m * 100, 2),
-            "all_three_papers": int(sum(1 for v in multi if len(v) == 3))}
+            "papers_with_3plus_institutes": int(sum(1 for v in multi if len(v) >= 3))}
 
 
 def bridges(G, at):
@@ -224,7 +255,7 @@ def bridges(G, at):
                          "cross_institute_coauthors": sum(cross.values()),
                          "reaches": sorted(set(cross) | set(multi)),
                          "also_affiliated_with": multi, "degree": G.degree(n)})
-    bet = nx.betweenness_centrality(G, weight=None)
+    bet = betweenness(G)
     for r in rows:
         r["betweenness"] = round(bet[r["author_id"]], 5)
     rows.sort(key=lambda r: (-r["betweenness"], r["author_id"]))
@@ -251,7 +282,9 @@ def institute_distances(gc):
     """Mean shortest-path length between authors of each pair of institutes (giant component)."""
     inst = nx.get_node_attributes(gc, "inst")
     tot, cnt = Counter(), Counter()
-    for s, dist in nx.all_pairs_shortest_path_length(gc):
+    src, exact = path_sources(gc)
+    for s in src:
+        dist = nx.single_source_shortest_path_length(gc, s)
         a = inst[s]
         for t, d in dist.items():
             if t != s:
@@ -458,7 +491,7 @@ def shared_partners(o):
     return {"partners": {i: len(s) for i, s in sets.items()}, "top_own": top_own,
             "jaccard": {pair_key(a, b): round(len(sets[a] & sets[b]) / len(sets[a] | sets[b]), 3) for a, b in PAIRS},
             "shared": {pair_key(a, b): len(sets[a] & sets[b]) for a, b in PAIRS},
-            "common_to_all_three": len(common),
+            "common_to_all": len(common),
             "top_common": [{"name": names[p], "cluster": clus[p], **{ABBR[i]: sp[(i, p)] for i in C.INST_NAMES}}
                            for p in top_common]}
 
@@ -502,80 +535,91 @@ def identity_sensitivity(o, G):
 
 
 def findings(S):
-    """3-6 structural findings, each with evidence, meaning and caveats."""
+    """Structural findings, each with evidence, meaning and caveats - written
+    from the computed numbers for any number of institutes."""
     mx, br, ds, rb = S["mixing"], S["bridges"], S["distances"]["mean_distance"], S["robustness"]
-    cm, sp, co, cs = S["citation_matrix"], S["shared_partners"], S["coauthorship"], S["communities"]
-    p = {r["pair"]: r for r in mx["pairs"]}
+    sp, co, cs = S["shared_partners"], S["coauthorship"], S["communities"]
     i1 = rb["fraction_removed"].index(0.01)
     i2 = rb["fraction_removed"].index(0.02)
     cut = br["min_node_cuts"]
     sens = S["identity_sensitivity"]
+    A_ = lambda i: ABBR[i]
+    dash = lambda k: k.replace("-", "\u2013")
+
+    def dist(a, b):
+        return ds.get(f"{A_(a)}-{A_(b)}", ds.get(f"{A_(b)}-{A_(a)}"))
+    pairs = sorted(mx["pairs"], key=lambda r: -r["coauthor_links"])
+    top = pairs[0]
+    top3 = ", ".join(f"{dash(r['pair'])} {r['coauthor_links']}" for r in pairs[:3])
+    ratios = ", ".join(f"{dash(r['pair'])} {r['ratio_observed_expected']}" for r in pairs[:4])
+    attach = {}
+    for i in C.INST_NAMES:
+        attach[i] = max(cut[pair_key(a, b)]["node_connectivity"] for a, b in PAIRS if i in (a, b))
+    weak = min(C.INST_NAMES, key=lambda i: (attach[i], i))
+    weak_d = [dist(weak, j) for j in C.INST_NAMES if j != weak and dist(weak, j) is not None]
+    jac = sorted(sp["jaccard"].items(), key=lambda kv: -kv[1])
     return [
-        {"title": "Three institutional islands inside one connected component",
-         "observation": (f"Only {mx['inter_links_total']} of {co['edges']:,} co-author links ({mx['inter_share_pct']}%) join "
-                         f"two different IIITs, although all three sit in one giant component of {co['giant_nodes']:,} authors."),
+        {"title": "Institutional islands inside one connected component",
+         "observation": (f"Only {mx['inter_links_total']:,} of {co['edges']:,} co-author links ({mx['inter_share_pct']}%) join "
+                         f"two different IIITs, although all five sit in one giant component of {co['giant_nodes']:,} authors."),
          "evidence": (f"A degree-preserving (configuration-model) null expects {mx['inter_links_expected_total']:,.0f} "
-                      f"inter-institute links; observed / expected = {p['IIITA-ABV']['ratio_observed_expected']} (IIITA–ABV), "
-                      f"{p['IIITA-IIITB']['ratio_observed_expected']} (IIITA–IIITB), {p['ABV-IIITB']['ratio_observed_expected']} "
-                      f"(ABV–IIITB). {cs['single_institute_communities_pct']}% of the {cs['communities_10plus']} Louvain communities "
-                      f"with ≥10 authors are ≥90% one institute; institute assortativity = "
-                      f"{S['identity_sensitivity']['conservative']['institution_assortativity']}."),
-         "meaning": "Collaboration is organised inside each institute; the three IIITs do not form a shared research community.",
+                      f"inter-institute links; observed / expected for the largest pairs: {ratios}. "
+                      f"{cs['single_institute_communities_pct']}% of the {cs['communities_10plus']} Louvain communities "
+                      f"with >=10 authors are >=90% one institute; institute assortativity = "
+                      f"{sens['conservative']['institution_assortativity']}."),
+         "meaning": "Collaboration is organised inside each institute; the five IIITs do not form a shared research community.",
          "caveat": ("Edges come from OpenAlex affiliations on papers; a missing affiliation hides a link. Low mixing is "
-                    "common for institutes in three different cities and is not by itself a sign of weak research.")},
-        {"title": "The IIITA–ABV link is carried by people who moved, not by joint projects",
-         "observation": (f"IIITA–ABV accounts for {p['IIITA-ABV']['coauthor_links']} of the {mx['inter_links_total']} "
-                         f"inter-institute links and {p['IIITA-ABV']['copublished_papers']} co-published papers, against "
-                         f"{p['IIITA-IIITB']['copublished_papers']} (IIITA–IIITB) and {p['ABV-IIITB']['copublished_papers']} (ABV–IIITB)."),
+                    "common for institutes in different cities and is not by itself a sign of weak research.")},
+        {"title": f"Ties between IIITs are largely carried by people who moved; the strongest is {dash(top['pair'])}",
+         "observation": (f"Co-author links between institutes: {top3}. {dash(top['pair'])} also has "
+                         f"{top['copublished_papers']} co-published papers."),
          "evidence": (f"{mx['inter_papers_with_multi_affiliated_author']} of the {mx['inter_papers']} papers that link two IIITs "
                       f"include an author whom OpenAlex places at both institutes ({br['multi_affiliated_authors']} such authors, "
-                      f"{br['multi_affiliated_core']} of them core faculty). The only two mixed communities are IIITA+ABV."),
-         "meaning": ("Inter-IIIT ties mostly follow career mobility (e.g. a PhD at IIITA and a faculty post at ABV) — "
-                     "relationships between people, not institutional partnerships."),
-         "caveat": ("'Placed at both' is inferred from affiliations over 2016–2026; it may be a move, a dual "
+                      f"{br['multi_affiliated_core']} of them core faculty)."),
+         "meaning": ("Inter-IIIT ties mostly follow career mobility (a PhD at one IIIT and a faculty post at another) - "
+                     "relationships between people more than institutional partnerships."),
+         "caveat": ("'Placed at both' is inferred from affiliations over 2016-2026; it may be a move, a dual "
                     "affiliation, or an OpenAlex affiliation error. We cannot tell these apart without CVs.")},
-        {"title": "IIIT Bangalore hangs on eight people",
-         "observation": (f"Every path from IIITB to IIITA or ABV passes through the same {cut['IIITA-IIITB']['node_connectivity']} "
-                         f"authors (minimum node cut); IIITA–ABV needs {cut['IIITA-ABV']['node_connectivity']}."),
-         "evidence": (f"Mean shortest-path distance IIITA–IIITB = {ds['IIITA-IIITB']} and ABV–IIITB = {ds['ABV-IIITB']} steps, "
-                      f"vs {ds['IIITB-IIITB']} inside IIITB and {ds['ABV-IIITA']} for IIITA–ABV. In citations, IIITB papers cite "
-                      f"the other two only {cm['excluding_self_citations']['IIITB']['IIITA'] + cm['excluding_self_citations']['IIITB']['ABV']} "
-                      f"times once author self-citations are removed."),
-         "meaning": "IIITB is structurally peripheral to the group; its attachment is fragile and runs through a handful of individuals.",
-         "caveat": "Node cuts are computed on the 2016–2026 co-authorship snapshot; one new joint project could change them."},
+        {"title": f"{weak} is the most weakly attached institute",
+         "observation": (f"Removing {attach[weak]} authors is enough to cut {A_(weak)} off from even its best-connected "
+                         f"partner IIIT (minimum node cut); for the others: "
+                         + ", ".join(f"{A_(i)} {attach[i]}" for i in C.INST_NAMES if i != weak) + "."),
+         "evidence": (f"Mean shortest-path distance from {A_(weak)} authors to the other institutes: "
+                      f"{min(weak_d) if weak_d else '-'} to {max(weak_d) if weak_d else '-'} steps, vs {dist(weak, weak)} inside {A_(weak)}."),
+         "meaning": f"{A_(weak)} is structurally peripheral to the group; its attachment runs through a handful of individuals.",
+         "caveat": "Node cuts are computed on the 2016-2026 co-authorship snapshot; one new joint project could change them."},
         {"title": "Cross-institute reachability collapses when brokers are removed",
          "observation": (f"{rb['targeted']['cross_reach'][0] * 100:.0f}% of cross-institute author pairs are joined by some path. "
                          f"Removing the 1% of authors with the highest betweenness cuts this to "
                          f"{rb['targeted']['cross_reach'][i1] * 100:.0f}%, and 2% to {rb['targeted']['cross_reach'][i2] * 100:.1f}%."),
          "evidence": (f"Removing the same number of random authors leaves {rb['random']['cross_reach'][i1] * 100:.0f}% and "
-                      f"{rb['random']['cross_reach'][i2] * 100:.0f}% (10 runs, sd ≤ {max(rb['random']['cross_reach_sd'][:i2 + 1]) * 100:.1f} pp). "
+                      f"{rb['random']['cross_reach'][i2] * 100:.0f}% (10 runs, sd <= {max(rb['random']['cross_reach_sd'][:i2 + 1]) * 100:.1f} pp). "
                       f"The top 5% of authors hold {co['degree']['share_of_degree_top5pct']}% of all co-author ties; max degree "
                       f"{co['degree']['max']} vs {S['er_baseline']['max_degree_sim']} in an ER graph of the same size."),
-         "meaning": ("The network is robust to random loss but fragile to targeted loss — the signature of a hub-dominated "
+         "meaning": ("The network is robust to random loss but fragile to targeted loss - the signature of a hub-dominated "
                      "(heavy-tailed) network. Connectivity between institutes depends on a few dozen senior faculty."),
          "caveat": "Betweenness is computed once (non-adaptive removal); removing a person is a thought experiment, not a forecast."},
         {"title": "The IIITs are connected indirectly, through the same IITs",
-         "observation": (f"{sp['common_to_all_three']} Indian institutions co-author with all three IIITs; the strongest common "
-                         f"partners are {sp['top_common'][0]['name']} and {sp['top_common'][1]['name']}."),
-         "evidence": (f"Jaccard overlap of partner sets: IIITA–ABV {sp['jaccard']['IIITA-ABV']}, IIITA–IIITB {sp['jaccard']['IIITA-IIITB']}, "
-                      f"ABV–IIITB {sp['jaccard']['ABV-IIITB']}. Top 3 partners of each institute (shared papers): "
-                      + "; ".join(f"{ABBR[i]}: " + ", ".join(f"{x['name']} ({x['papers']})" for x in sp["top_own"][i])
+         "observation": (f"{sp['common_to_all']} Indian institutions co-author with all five IIITs; the strongest common "
+                         f"partners are {', '.join(x['name'] for x in sp['top_common'][:3])}."),
+         "evidence": ("Jaccard overlap of partner sets, highest pairs: "
+                      + ", ".join(f"{dash(k)} {v}" for k, v in jac[:4]) + f"; lowest: {dash(jac[-1][0])} {jac[-1][1]}. "
+                      "Top 3 partners of each institute (shared papers): "
+                      + "; ".join(f"{A_(i)}: " + ", ".join(f"{x['name']} ({x['papers']})" for x in sp["top_own"][i])
                                   for i in C.INST_NAMES) + "."),
-         "meaning": ("Each IIIT's largest partners include institutions in its own city (MNNIT and the University of "
-                     "Allahabad; Jiwaji University in Gwalior; IISc and NIMHANS in Bangalore), while what the three share "
-                     "are national IITs. The IIITs occupy similar positions (common collaborators) without direct ties; "
-                     "IIITA and ABV are the most alike."),
+         "meaning": ("Each IIIT's largest partners include institutions in its own city, while what the five share are "
+                     "national IITs and IISc. The IIITs occupy similar positions (common collaborators) without many direct ties."),
          "caveat": ("Shared partners show similar positions, not information flow between the IIITs through those "
                     "partners. Partner cities are read from the institution names, not from the data.")},
         {"title": "Author disambiguation changes the inter-institution picture",
          "observation": ("Merging authors only because their names match (the earlier rule) creates false bridges between "
                          "institutes; the conservative rule removes them."),
          "evidence": (f"Name-only identities: {sens['name_only']['inter_institute_links']} inter-institute links, assortativity "
-                      f"{sens['name_only']['institution_assortativity']}, giant-component path length ≈ "
+                      f"{sens['name_only']['institution_assortativity']}, giant-component path length approx. "
                       f"{sens['name_only']['giant_path_length_sampled']}. Conservative: {sens['conservative']['inter_institute_links']} links, "
-                      f"{sens['conservative']['institution_assortativity']}, ≈ {sens['conservative']['giant_path_length_sampled']}."),
-         "meaning": ("Common Indian names (e.g. 11 OpenAlex IDs named 'Amit Kumar' at IIITA and ABV become a single node) make naive merging "
-                     "overstate integration and shorten paths. Bridge findings are only credible with careful identity rules."),
+                      f"{sens['conservative']['institution_assortativity']}, approx. {sens['conservative']['giant_path_length_sampled']}."),
+         "meaning": ("Common Indian names make naive merging overstate integration and shorten paths. Bridge findings are "
+                     "only credible with careful identity rules."),
          "caveat": ("The conservative rule may still split one person into several nodes (e.g. name spelling variants), "
                     "which slightly lowers degree and can lengthen paths; see DECISIONS.md.")},
     ]
@@ -589,19 +633,20 @@ def fig_structure(mix, dist, rob):
     fig, axes = plt.subplots(1, 2, figsize=(11, 3.7))
     ax = axes[0]
     labels = [ABBR[i] for i in C.INST_NAMES]
-    M = np.zeros((3, 3))
+    N = len(C.INST_NAMES)
+    M = np.zeros((N, N))
     for i, a in enumerate(C.INST_NAMES):
         M[i, i] = mix["within"][a]["coauthor_links"]
     for r in mix["pairs"]:
         i, j = C.INST_NAMES.index(r["a"]), C.INST_NAMES.index(r["b"])
         M[i, j] = M[j, i] = r["coauthor_links"]
     ax.imshow(np.log10(M + 1), cmap="Blues")
-    for i in range(3):
-        for j in range(3):
+    for i in range(N):
+        for j in range(N):
             ax.text(j, i, f"{int(M[i, j]):,}", ha="center", va="center", fontsize=10,
                     color="white" if M[i, j] > 500 else "#0b0b0b")
-    ax.set_xticks(range(3), labels)
-    ax.set_yticks(range(3), labels)
+    ax.set_xticks(range(N), labels)
+    ax.set_yticks(range(N), labels)
     ax.grid(False)
     ax.set_title("(a) Co-author links within and between institutes", fontsize=9.5)
     ax = axes[1]
@@ -675,7 +720,11 @@ def main():
     kg = 2 * gc.number_of_edges() / gc.number_of_nodes()
     S["reference_paths"] = reference_paths(gc.number_of_nodes(), S["coauthorship"]["giant_avg_path_length"], kg)
     S["identity_sensitivity"] = identity_sensitivity(o, G)
-    S["findings"] = findings(S)
+    try:
+        S["findings"] = findings(S)
+    except Exception as e:      # never lose the (slow) structure results over a text template
+        print(f"  [warn] findings text failed: {e!r}")
+        S["findings"] = []
     with open(C.STRUCTURE_JSON, "w", encoding="utf-8") as f:
         json.dump(S, f, indent=1, default=lambda v: v.item() if hasattr(v, "item") else str(v))
     print(f"  Saved {C.STRUCTURE_JSON}")

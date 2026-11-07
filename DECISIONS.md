@@ -26,7 +26,7 @@ No other source of author identity is used.
 
 | Check | How | Where |
 |---|---|---|
-| The author belongs to one of the three institutes on that paper | The authorship lists the institute's OpenAlex institution ID (`I26072440`, `I9747756`, `I181514455`; checked against ROR `03rgjt374`, `008b3ap06`, `05h9eqy10`). Raw affiliation strings are kept for department parsing. | `part1b_enrich_data.affiliated_authorships` |
+| The author belongs to one of the five institutes on that paper | The authorship lists the institute's OpenAlex institution ID (`I26072440`, `I9747756`, `I181514455`, `I64189192`, `I119939252`; checked against ROR `03rgjt374`, `008b3ap06`, `05h9eqy10`, `05f11g639`, `03vfp4g33`). Raw affiliation strings are kept for department parsing. | `part1b_enrich_data.affiliated_authorships` |
 | Two records are the same person | Rules in section 2 (OpenAlex ID first, then co-author evidence) | `part1b_enrich_data.resolve_author_identities` |
 | Mega-collaborations do not hide authors | OpenAlex returns at most 100 authorships per work; such works keep the institute through the query that returned them (`found_via`) | `group10_common.our_institutions_on` |
 | Publication metadata | DOI normalisation; versions of the same paper (preprint / repository / published) are merged by normalised title + at least one shared author name, or by identical DOI | `group10_common.select_corpus` |
@@ -107,7 +107,7 @@ rebuilds the graph with name-only identities so the effect is measured:
   identity errors move individual nodes rather than redrawing communities.
 * *Institution-level findings:* the conservative rule can only *under*-state
   inter-institute ties relative to the truth from false splits; it cannot invent
-  them. The "three islands" conclusion is therefore conservative-safe. The exact
+  them. The "institutional islands" conclusion is therefore conservative-safe. The exact
   node-cut sizes (8 and 28) are the most sensitive numbers.
 
 **Manual review needed.** Bridge authors and the IIITB node cut (8 people), and
@@ -117,19 +117,19 @@ any audit rows marked "kept separate" for core faculty with name variants.
 
 Execution order: `part1_collect_data.py` → `part1b_enrich_data.py` →
 `part2_networks.py` → `part3_statistics.py` → `part5_insights.py` →
-`part5b_network_structure.py` → `part4_dashboard.py` → `part6_report.py`.
+`part5b_network_structure.py` → `part5c_extensions.py` → `part4_dashboard.py` → `part6_report.py`.
 Shared code: `group10_common.py` (configuration, OpenAlex client, classification
 rules) and `group10_analysis.py` (loading and statistics used by every output).
 
 | # | Stage | What happens / why | Code | In → out | Errors, missing values, duplicates | Validation |
 |---|---|---|---|---|---|---|
-| 1 | Ingestion | Download all works 2016–2026 for the three OpenAlex institution IDs, plus Indian works citing / cited by them (batched `cites:` / `cited_by:` filters + `country_code:IN`) | `part1_collect_data.py` | OpenAlex API → `cache/*.json.gz` | Retries, rate-limit and daily-budget handling; resumable; works with >100 authors re-queried by institution | Counts per institute printed; cache is the single raw source |
+| 1 | Ingestion | Download all works 2016–2026 for the five OpenAlex institution IDs, plus Indian works citing / cited by them (batched `cites:` / `cited_by:` filters + `country_code:IN`) | `part1_collect_data.py` | OpenAlex API → `cache/*.json.gz` | Retries (including truncated responses), rate-limit and daily-budget handling; resumable; citation flows track per-paper coverage so adding an institute fetches only its papers; works with >100 authors re-queried by institution | Counts per institute printed; cache is the single raw source |
 | 2 | Schema & field selection | Keep only the fields used later (IDs, DOI, year, type, venue locations, authorships with raw affiliations, references, topics, citations, retraction, OA) | `group10_common.compact_work` | raw JSON → compact records | Missing values become empty strings / 0 | — |
 | 3 | Inclusion & cleaning | Keep journal and conference papers 2016–2026 with an affiliated author; drop preprints, book chapters, errata, editorials, datasets, peer reviews, retracted works | `classify_work`, `select_corpus` | works → corpus | Unknown venue: conference papers kept, others dropped with a reason | Exclusion counts by reason printed |
 | 4 | Deduplication | Merge versions of one paper (same normalised title ≥25 chars + shared author name, or same DOI); citations = max over versions; references to an alias are credited to the canonical paper | `select_corpus`, `effective_citations` | corpus → canonical papers + alias map | Preference: journal > conference, named venue, more citations | "duplicate version" count printed |
 | 5 | Venue quality | Scimago quartile of the journal **in the publication year** (±2 years fallback; 2026 → 2025); conferences: strict ICORE2026 match | `Scimago`, `CoreRanks` | venue + year → quartile / rank | Unranked → empty | Workshops never inherit main-track rank |
 | 6 | Author identity | Section 2 | `resolve_author_identities` | authorships → canonical author IDs | Conflicts kept separate; audit CSV | 0 same-paper conflicts |
-| 7 | Three institutes | Each paper gets one row per assigned institute in `group10_data.csv`; each author's *main* institute = where most of their papers are; authors placed at two institutes are flagged | `build_dataset`, `part2_networks.build_authorship` | corpus → dataset rows | Papers shared by two institutes appear twice; use `openalex_id` to deduplicate | 38 papers carry two institutes, none carry all three |
+| 7 | Five institutes | Each paper gets one row per assigned institute in `group10_data.csv`; each author's *main* institute = where most of their papers are; authors placed at two institutes are flagged | `build_dataset`, `part2_networks.build_authorship` | corpus → dataset rows | Papers shared by two institutes appear twice; use `openalex_id` to deduplicate | 148 papers carry two or more institutes |
 | 8 | Nodes & edges | Citation: paper → paper if A references B (directed, unweighted, self-loops removed). Co-authorship: author–author if they share a paper (undirected, weight = joint papers). Cross-institute edges to other Indian institutes are written to the CSVs only | `part2_networks.py` | dataset + cache → `citation_network.csv`, `authorship_network.csv`, `indian_connections.csv` | Papers with >50 authors add no external edges | Edge-type counts printed |
 | 9 | Network metrics | PageRank, in-degree, degree/betweenness, Louvain; inferential tests; structure and inter-institution analysis | `part2`, `part5_insights.py`, `part5b_network_structure.py` | networks → `outputs/*.json` | Disconnected graphs: path metrics on giant component | Null models, seed stability, sensitivity analysis |
 | 10 | Derived outputs | Report figures, statistics summary, dashboard data | `part3`, `part5`, `part5b`, `part4`, `part6` | JSON/CSV → PNG, PDF, HTML | Missing inputs → empty-state messages | Dashboard and report read the same JSON |
@@ -180,7 +180,18 @@ internal citation edges pointing outside the corpus were found. Remaining points
   OpenAlex dates later than the citing one, and 16 papers lie in citation cycles.
   Both come from preprint and published versions sharing a record.
 
-## 5. Reproducibility and privacy
+## 5. Review additions (November 2026)
+
+| Decision | Rationale | Alternatives considered | Implication |
+|---|---|---|---|
+| Add IIIT Hyderabad (`I64189192`) and IIIT Delhi (`I119939252`) | Requested after review; same institute type, larger research output | — | All scripts are generic over `C.INSTITUTIONS`; colours use palette slots 1–4 and 7 (slot 5, magenta, stays reserved for links between institutes) |
+| Impact factor = OpenAlex `summary_stats.2yr_mean_citedness` of the venue | Same construction as the Clarivate JIF (citations in year Y to items of Y−1, Y−2 ÷ items), open data; Scimago's export is blocked for scripts | Clarivate JIF (licensed); Scimago "Cites/Doc (2y)" | Current value, not year-matched; bands ≥10, 5–10, <5. Q1 and IF ≥5 disagree for a third of Q1 papers, so both are shown |
+| Faculty vs students from the official web lists | OpenAlex has no role; the lists are the authoritative source | ORCID employment records (sparse); the old authorship-pattern heuristic | Conservative name matching (surname + compatible first name; initials not accepted for very common surnames; no contradicting middle names; ambiguous names left unmatched). Unlisted authors keep a heuristic label. Lists are current, so former faculty fall into "likely faculty (not listed)". Student lists are personal data and stay local |
+| Large-graph sampling | 9,451 authors make exact all-pairs paths and betweenness slow | Exact computation (≈1 h+) | Above 6,000 nodes: seeded sample of 2,000 sources for betweenness, path length and the distance matrix; diameter = largest eccentricity found (lower bound) |
+| Multilayer = co-authorship + author-to-author citation on the same nodes | Both layers exist for every author and answer "do they read each other or work together?" | A topic-similarity layer (dense cliques, no clear meaning) | Edge overlap is tested against a configuration model; the mutually connected giant component follows Buldyrev et al. (2010). An institute-level 4-layer multiplex is added |
+| Saveetha: test size, who cites and topic before calling anything anomalous | A large institution cites more simply because it publishes more | Flag on raw citation counts (what made Saveetha look suspicious) | Saveetha's citing is proportional to its share of Indian output (1.09× vs 1.74× for other large citers) and does not come from the cited authors' co-author circle; the tests describe patterns, not intent |
+
+## 6. Reproducibility and privacy
 
 **Getting the data (authorised users).** The dataset is OpenAlex-derived and is
 shared only with the course instructor. An authorised user can either:
@@ -199,7 +210,7 @@ shared only with the course instructor. An authorised user can either:
 python -m venv .venv && .venv/Scripts/activate    # Windows; use bin/activate elsewhere
 pip install -r requirements.txt
 python part1b_enrich_data.py && python part2_networks.py && python part3_statistics.py
-python part5_insights.py && python part5b_network_structure.py
+python part5_insights.py && python part5b_network_structure.py && python part5c_extensions.py
 python part4_dashboard.py && python part6_report.py
 ```
 
@@ -211,7 +222,7 @@ python part4_dashboard.py && python part6_report.py
 | `README.md`, `DECISIONS.md`, course documents in `docs/` | `cache/` (raw OpenAlex responses) |
 | Report `10_IIIT.pdf` and aggregate figures in `outputs/charts/` | `outputs/*.csv`, `outputs/*.json`, `outputs/*.md` (author-level records, identity audit) |
 | Dashboard screenshots in `docs/images/` (no tables of individuals) | `dashboard.html`, `site/` (the built dashboard embeds author names and paper records) |
-| Reference tables in `reference/` (Scimago SJR, ICORE ranks; public sources) | `.env`, `outputs/charts/f4_*.png`, `outputs/charts/11_*.png` (legends name individuals) |
+| Reference tables in `reference/` (Scimago SJR, ICORE ranks, institute faculty lists; public sources) | `.env`, `outputs/charts/f4_*.png`, `outputs/charts/11_*.png` (legends name individuals), `reference/faculty_rosters/*_students.csv` (scraped student lists) |
 
 The `.gitignore` rules enforce this split.
 
@@ -225,6 +236,6 @@ the repository owner's decision.
 author names and paper titles behind its networks, as the course requires. These
 are public bibliographic facts from OpenAlex, but publishing the page does make
 them visible. Since the search, profile and path features were added, the page
-embeds every one of the 4,041 authors (name, institute, department, papers per
-year, co-authors) and all 6,543 paper titles, not only the authors shown in
+embeds every one of the 9,451 authors (name, institute, department, role, papers per
+year, co-authors) and all 14,762 paper titles, not only the authors shown in
 tables and the explorer. The raw dataset files themselves are not published.

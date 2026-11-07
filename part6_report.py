@@ -98,7 +98,7 @@ def footer(canvas, doc):
     canvas.saveState()
     canvas.setFont("Helvetica", 7)
     canvas.setFillColor(INK2)
-    canvas.drawString(MARGIN, 20, "DPCN 2026 · Group 10 · Titan Mandal · Research mapping of three IIITs")
+    canvas.drawString(MARGIN, 20, "DPCN 2026 · Group 10 · Titan Mandal · Research mapping of five IIITs")
     canvas.drawRightString(A4[0] - MARGIN, 20, f"Page {doc.page}")
     canvas.restoreState()
 
@@ -149,11 +149,12 @@ def build():
     df, fac, I, flow = o["df"], o["fac"], o["insights"], o["flow"]
     cm, am = o["cite_metrics"], o["auth_metrics"]
     S = A.institution_summary(df, fac).set_index("institution")
-    ia, ab, ib = C.INST_NAMES
+    AB = C.INST_ABBR
+    E = o.get("ext") or {}
     story = []
 
     # ── title & links ──
-    story += [P("Research Mapping of IIIT Allahabad, ABV-IIITM Gwalior and IIIT Bangalore, 2016–2026", H1),
+    story += [P("Research Mapping of IIIT Allahabad, ABV-IIITM Gwalior, IIIT Bangalore, IIIT Hyderabad and IIIT Delhi, 2016–2026", H1),
               P("DPCN 2026 Course Project · <b>Group 10</b> · Team Titan Mandal · Hrishikesh, Sarvesh, Shourya "
                 "· Instructor: Chittaranjan Hens", SUB), Spacer(1, 4)]
     dash = link(C.DASHBOARD_LIVE_URL, "open dashboard") if C.DASHBOARD_LIVE_URL else \
@@ -170,7 +171,7 @@ def build():
     # ── key findings ──
     SN = o["structure"]
     story.append(P("Research question and key findings", H2))
-    story.append(P("<b>How do the research networks of the three IIITs compare, and how — and through whom — are the "
+    story.append(P("<b>How do the research networks of the five IIITs compare, and how — and through whom — are the "
                    "institutes connected?</b> Co-authorship edges = two authors on one paper (undirected, weighted by "
                    "joint papers); citation edges = paper A lists paper B as a reference (directed).", BODY))
     story += bullets([f"<b>{escape(f['title'])}.</b> {escape(f['observation'])}" for f in SN["findings"]] +
@@ -179,7 +180,7 @@ def build():
 
     # ── overview table ──
     story.append(P("1. Data and institution overview", H2))
-    rows = [["Metric", ia, ab, ib, "All (unique)"]]
+    rows = [["Metric"] + [AB[i] for i in C.INST_NAMES] + ["All (unique)"]]
     spec = [("Papers (journal / conference)", lambda s: f"{s.papers:,} ({s.journal_papers:,} / {s.conference_papers:,})"),
             ("Q1 share of journal papers", lambda s: f"{s.q1_journal_pct}%"),
             ("CORE A*/A conference papers", lambda s: f"{s.core_astar_a}"),
@@ -194,13 +195,15 @@ def build():
                                   for k, v in S.loc[inst].items()})
     for name, f in spec:
         rows.append([name] + [f(row_of(i)) for i in C.INST_NAMES + ["All (unique papers)"]])
-    story.append(table(rows, [WIDTH * 0.32] + [WIDTH * 0.17] * 4, align_right=(1, 2, 3, 4)))
+    nc = len(C.INST_NAMES) + 1
+    story.append(table(rows, [WIDTH * 0.28] + [WIDTH * 0.72 / nc] * nc, align_right=tuple(range(1, nc + 1))))
     story.append(P(
-        "<b>Data.</b> OpenAlex works affiliated with each institute's OpenAlex ID (I26072440, I9747756, I181514455), "
+        "<b>Data.</b> OpenAlex works affiliated with each institute's OpenAlex ID (" + ", ".join(v[0] for v in C.INSTITUTIONS.values()) + "), "
         "2016–2026; journal and conference papers only (preprints, book chapters, errata, retracted and duplicate "
         "versions removed; a version's citations are merged into the published paper). Journal quartile = Scimago "
         "SJR quartile of the journal in the publication year; conference rank = ICORE2026 (strict acronym + title "
-        "match). Indian institutions = OpenAlex country code IN. <i>Core faculty</i> = authors with ≥5 papers in ≥3 "
+        "match). Indian institutions = OpenAlex country code IN. <i>Faculty / students</i> = author names matched to the official faculty and student lists of the institute "
+        "websites (2026-11-07); <i>core faculty</i> (heuristic) = ≥5 papers in ≥3 "
         "years, last author on ≥30% and first author on ≤50% of them; departments come from 'Department of …' in the "
         "affiliation strings. 2026 is a partial year.", CAP))
 
@@ -293,14 +296,14 @@ def build():
                        align_right=(0, 3, 4, 5)))
     story.append(fig(os.path.join(C.CHARTS_DIR, "f3_citation_network.png"), WIDTH * 0.8, caption=
                      "Figure 4. (a) Largest weakly connected component of the internal citation network, coloured by "
-                     "institute: the three institutes form separate regions. (b) Observed same-institute share versus "
+                     "institute: the five institutes form separate regions. (b) Observed same-institute share versus "
                      "1000 graphs with shuffled citation targets."))
 
     # ── authorship network ──
     an, asum = I["authorship_network"], am["summary"]
     story.append(P("6. Authorship network", H2))
     story += bullets([
-        f"<b>Construction.</b> Undirected co-authorship among the {asum['nodes']:,} authors of the three institutes "
+        f"<b>Construction.</b> Undirected co-authorship among the {asum['nodes']:,} authors of the five institutes "
         f"(OpenAlex author IDs; extra merges only with same name, same institute and a shared co-author — "
         f"DECISIONS.md), {asum['edges']:,} weighted edges; authorship_network.csv adds "
         f"{asum['edge_scopes'].get('cross_institution_india', 0):,} edges to co-authors at other Indian institutes.",
@@ -320,7 +323,7 @@ def build():
                      b["institution"]])
     story.append(table(rows, [WIDTH * 0.3, WIDTH * 0.2, WIDTH * 0.3, WIDTH * 0.2]))
     co, mx, br = SN["coauthorship"], SN["mixing"], SN["bridges"]
-    story.append(P("6b. How the three institutes connect", H2))
+    story.append(P("6b. How the five institutes connect", H2))
     ds = SN["distances"]["mean_distance"]
     rows = [["Pair", "Co-author links (expected)", "Co-published papers", "Min. node cut", "Mean distance",
              "Shared Indian partners (Jaccard)", "Non-self citations A→B / B→A"]]
@@ -338,8 +341,7 @@ def build():
     story.append(fig(os.path.join(C.CHARTS_DIR, "f6_institution_structure.png"), WIDTH * 0.8, caption=
                      f"Figure 5. (a) Co-author links within (diagonal) and between institutes. (b) Share of "
                      f"cross-institute author pairs still connected, and giant-component size, when authors are removed "
-                     f"by betweenness or at random. Within-institute distances: IIITA {ds['IIITA-IIITA']}, ABV "
-                     f"{ds['ABV-ABV']}, IIITB {ds['IIITB-IIITB']} steps; network diameter {co['giant_diameter']}."))
+                     f"by betweenness or at random. Within-institute distances: " + ", ".join(f"{AB[i]} {ds.get(AB[i] + '-' + AB[i])}" for i in C.INST_NAMES) + f" steps; network diameter {co['giant_diameter']}."))
 
     # ── Indian connectivity ──
     story.append(P("7. Indian connectivity: citation flow and collaboration", H2))
@@ -355,42 +357,98 @@ def build():
     story.append(table(rows, [WIDTH * 0.12, WIDTH * 0.12, WIDTH * 0.06, WIDTH * 0.38, WIDTH * 0.32],
                        align_right=(1, 2)))
     cl = A.cluster_links(ind)
-    story.append(P("Co-authorship by partner cluster (shared papers, all three institutes): " + ", ".join(
+    story.append(P("Co-authorship by partner cluster (shared papers, all five institutes): " + ", ".join(
         f"{c} {int(cl[c].sum())}" for c in cl.sum().sort_values(ascending=False).index[:8]) +
         f". Cross-cluster links (partner not an IIIT) dominate. Topic similarity (Jaccard over OpenAlex subfields) is "
-        f"highest between IIITA and IIITB "
-        f"({o['jaccard'].iloc[0]['jaccard_similarity']}) and with IIIT Hyderabad for IIITB, yet it does not predict "
-        f"collaboration volume.", CAP))
+        f"highest between {o['jaccard'].iloc[0]['entity_a']} and {o['jaccard'].iloc[0]['entity_b']} "
+        f"({o['jaccard'].iloc[0]['jaccard_similarity']}), yet it does not predict collaboration volume.", CAP))
     story.append(fig(os.path.join(C.CHARTS_DIR, "f5_connectivity.png"), WIDTH * 0.8, caption=
                      "Figure 6. (a) Yearly ratio of citations received from / given to other Indian institutes. "
                      "(b) Co-authored papers vs citations received per partner institute."))
 
     # ── limitations & contributions ──
+    # ── review additions ──
+    if E:
+        Q, Rr, G, M, An = E["quality"], E["roles"], E["gcc"], E["multilayer"], E["anomalies"]
+        story.append(P("7b. Review additions: venue quality, roles, GCC, multilayer, citation anomalies", H2))
+        rows = [["Institute", "Journal papers", "Q1", "Q2", "Q3", "Q4", "IF ≥10", "IF ≥5", "Listed faculty / students found"]]
+        cov = Rr["coverage"]
+        for i in C.INST_NAMES:
+            b = Q["by_inst"][i]
+            qc, qp = b["quartile_counts"], b["quartile_pct"]
+            r = cov[i]["roles"]
+            rows.append([AB[i], f"{b['journal_papers']:,}"] + [f"{qc[k]} ({qp[k]}%)" for k in ("Q1", "Q2", "Q3", "Q4")] +
+                        [f"{b['if_gt10']} ({b['if_gt10_pct']}%)", f"{b['if_gt5']} ({b['if_gt5_pct']}%)",
+                         f"{r['Faculty'] + r['Adjunct / visiting faculty']} / {r['PhD scholar'] + r['Student (MS / M.Tech / B.Tech)']}"])
+        story.append(table(rows, [WIDTH * 0.08, WIDTH * 0.09] + [WIDTH * 0.1] * 4 + [WIDTH * 0.1, WIDTH * 0.1, WIDTH * 0.23],
+                           align_right=tuple(range(1, 9))))
+        fn, em = Rr["faculty_network"], Rr["edge_role_mix"]
+        stu_inter = sum(v for k, v in em["between_institutes"].items() if "student" in k)
+        ov, lv = M["overlap"], An["legit_vs_boosting"]
+        sv = next((r for r in lv["institutions"] if r["is_saveetha"]), {})
+        svs = An["saveetha"]
+        story += bullets([
+            f"<b>Quartiles and impact factor.</b> IF = OpenAlex 2-year mean citedness of the journal (the JIF formula on open "
+            f"data). Q1 and IF ≥5 are not interchangeable: only {Q['if_by_quartile']['Q1']['share_if_gt5_pct']}% of Q1 papers "
+            f"are in IF ≥5 journals (median IF of Q1 journals {Q['if_by_quartile']['Q1']['median_if']}).",
+            f"<b>Faculty vs students.</b> Names matched to the official lists of all five websites; "
+            + ", ".join(f"{AB[i]} {cov[i]['faculty_listed_with_papers']}/{cov[i]['faculty_listed']}" for i in C.INST_NAMES)
+            + " listed faculty found as authors. Students (listed or likely) sit at one end of "
+            f"{round(stu_inter / max(em['between_institutes_total'], 1) * 100)}% of the links between institutes. Listed faculty "
+            f"alone form {fn['components']} components (largest {fn['giant_share_pct']}%, {fn['inter_institute_links']} links "
+            f"between institutes); shared students add {fn['extra_inter_institute_pairs_via_student']} more cross-institute "
+            "faculty pairs — students are the glue.",
+            f"<b>Giant component.</b> {G['gcc_nodes']:,} of {G['nodes']:,} authors ({G['gcc_share_pct']}%) and "
+            f"{G['gcc_edge_share_pct']}% of links are in the GCC (path length {G['gcc_avg_path_length']}, diameter "
+            f"{G['gcc_diameter']}); the next component has {G['second_nodes']} authors. Share of each institute inside: "
+            + ", ".join(f"{AB[i]} {G['by_inst'][i]['in_gcc_pct']}%" for i in C.INST_NAMES)
+            + f". The GCC grew from {G['growth']['gcc_pct'][0]}% of authors in {G['growth']['years'][0]} to "
+            f"{G['growth']['gcc_pct'][-1]}%.",
+            f"<b>Multilayer (co-authorship + citation, same authors).</b> {ov['citation_edges_between_coauthors_pct']}% of "
+            f"citation links join co-authors, {ov['overlap_ratio_vs_random']}× a degree-preserving random expectation; layer "
+            f"degrees correlate (ρ = {M['degree_spearman']}); {M['mutual_gcc_pct']}% of authors form a mutually connected "
+            f"component. Between institutes the citation layer has {ov['inter_institute_citation_only']:,} links among authors "
+            f"who never co-wrote, against {M['layers']['co-authorship']['inter_institute_edges']} co-author links.",
+            f"<b>Citation anomalies (Saveetha University).</b> Rank {svs['rank_by_links']} among Indian institutions citing "
+            f"the five IIITs (#1 for IIITA) with only {sum(svs['shared_papers_by_inst'].values())} joint papers. But it "
+            f"writes {sv.get('share_of_indian_output_pct')}% of all Indian papers and supplies "
+            f"{sv.get('share_of_our_citing_works_pct')}% of the works citing us ({sv.get('over_representation')}×; other large "
+            f"citers {lv['others_median']['over_representation']}×), and only {sv.get('links_from_coauthors_pct')}% of its "
+            f"citations come from the cited authors' co-author circle (others {lv['others_median']['links_from_coauthors_pct']}%). "
+            "Its prominence is explained by size, not a circle aimed at the IIITs; unusual are the late start (2022), "
+            f"lower topical match ({sv.get('same_field_pct')}% vs {lv['others_median']['same_field_pct']}%) and citing "
+            f"without collaborating. Removing its citations changes institute totals by at most "
+            f"{max(v['drop_pct'] for v in svs['sensitivity'].values())}%."])
+
     story.append(P("8. Limitations", H2))
     story += bullets([
         "OpenAlex affiliation and reference coverage is incomplete, especially before 2018. Author identity trusts "
         "OpenAlex IDs and merges further only with co-author evidence, so some people may remain split; with a "
         f"name-only rule there would be {SN['identity_sensitivity']['name_only']['inter_institute_links']} instead of "
         f"{SN['identity_sensitivity']['conservative']['inter_institute_links']} inter-institute links. The "
-        "core-faculty rule is a heuristic, not an official faculty list.",
+        "faculty/student roles come from name matching against current web lists; former faculty and graduated students "
+        "of most institutes are labelled by a heuristic. Impact factor is an open proxy (OpenAlex 2-year mean citedness, "
+        "current value), not the Clarivate JIF.",
         "Networks are 2016–2026 snapshots; node cuts and robustness describe that snapshot, and an author's 'main' "
         "institute is where most of their papers are.",
-        "IIIT Bangalore authors rarely state a department, so most of its departments are inferred from the research "
-        "field; CORE ranks cover only venues on the ICORE list.",
+        "Authors at several institutes rarely state a department, so departments are often inferred from the research "
+        "field; CORE ranks cover only venues on the ICORE list. Path lengths and betweenness use a fixed random sample "
+        "of 2,000 source authors because the network has over 6,000 nodes.",
         "Citation counts are taken at collection time; 2025–26 papers are excluded from normalised scores. The "
         "regression shows associations, not causal effects."])
     story.append(P("9. Conclusions", H2))
     ct = I["connectivity"]["collab_vs_citation"]
     story += bullets([
-        "All three IIITs roughly doubled their output in ten years while moving to better journals, so the growth is "
-        "not a volume-only effect. Differences in raw citations between them largely disappear once papers are "
-        "compared with others of the same year, field and type.",
+        f"All five IIITs grew ({min(I['growth_quality'][i]['annual_growth_pct'] for i in C.INST_NAMES)}–"
+        f"{max(I['growth_quality'][i]['annual_growth_pct'] for i in C.INST_NAMES)}% a year) while their Q1 share held or rose. "
+        f"Normalised for year, field and type, impact is highest at IIITH and IIITD and lowest at conference-heavy IIITB.",
         "Citation success depends far more on where a paper is published (Q1 journal vs conference) and how large the "
         "team is than on whether it has foreign co-authors.",
-        f"Both networks show three largely separate research systems: internal citations are almost all "
+        f"Both networks show five largely separate research systems: internal citations are almost all "
         f"self-citations, and only {mx['inter_papers']} papers connect two of the IIITs — "
-        f"{mx['inter_papers_with_multi_affiliated_author']} of them through people placed at two institutes. IIITB is "
-        f"attached to the others through {br['min_node_cuts']['IIITA-IIITB']['node_connectivity']} authors. "
+        f"{mx['inter_papers_with_multi_affiliated_author']} of them through people placed at two institutes. "
+        f"{SN['findings'][2]['title']}: removing {SN['findings'][2]['observation'].split('Removing ')[1].split(' authors')[0]} authors "
+        f"cuts it off from every other IIIT. "
         f"Their Indian links run through NITs, IITs and nearby universities, and partners that co-author with an "
         f"institute supply most of its Indian citations "
         f"({min(x['share_in_cites_from_coauthor_partners_pct'] for x in ct.values())}–"
@@ -401,7 +459,9 @@ def build():
              ["Publication trend · quartile (Q1–Q4) · CORE rank · research areas · top-10 cited papers with DOIs",
               "All institutions"],
              ["Faculty list (name, department, h-index, papers) · sortable performance table · h-index histogram · "
-              "top-5 journals and conferences · departments", "IIIT Allahabad / ABV-IIITM Gwalior / IIIT Bangalore"],
+              "top-5 journals and conferences · departments", " / ".join(C.INST_NAMES)],
+             ["Q1–Q4 and impact-factor bands · faculty vs students · giant component · multilayer network · citation anomalies (Saveetha)",
+              "Review additions"],
              ["Directed citation graph (D3) · PageRank top-10 · in-degree distribution", "Citation network"],
              ["Interactive co-authorship graph (filters, search, author details, Louvain colouring)", "Network explorer"],
              ["Network properties · log-binned degree distribution · centralities · communities · robustness · null models",
@@ -424,7 +484,7 @@ def build():
           "three-way split. Every part was discussed, cross-checked and reviewed by all three members.", CAP)]))
 
     doc = SimpleDocTemplate(OUT, pagesize=A4, leftMargin=MARGIN, rightMargin=MARGIN, topMargin=28, bottomMargin=32,
-                            title="Group 10 - Research Mapping of Three IIITs", author="Titan Mandal (Group 10)",
+                            title="Group 10 - Research Mapping of Five IIITs", author="Titan Mandal (Group 10)",
                             subject="DPCN 2026 statistics report")
     doc.build(story, onFirstPage=footer, onLaterPages=footer)
     print(f"  Saved {OUT} ({os.path.getsize(OUT) / 1024:.0f} KB)")

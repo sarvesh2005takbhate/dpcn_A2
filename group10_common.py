@@ -28,24 +28,35 @@ INSTITUTIONS = {
     "IIIT Allahabad":    ("I26072440",  "03rgjt374"),
     "ABV-IIITM Gwalior": ("I9747756",   "008b3ap06"),
     "IIIT Bangalore":    ("I181514455", "05h9eqy10"),
+    "IIIT Hyderabad":    ("I64189192",  "05f11g639"),
+    "IIIT Delhi":        ("I119939252", "03vfp4g33"),
 }
 INST_NAMES = list(INSTITUTIONS)
+INST_ABBR = {"IIIT Allahabad": "IIITA", "ABV-IIITM Gwalior": "ABV", "IIIT Bangalore": "IIITB",
+             "IIIT Hyderabad": "IIITH", "IIIT Delhi": "IIITD"}
 INST_ID_TO_NAME = {v[0]: k for k, v in INSTITUTIONS.items()}
 INST_FULL_NAMES = {
     "IIIT Allahabad":    "Indian Institute of Information Technology Allahabad",
     "ABV-IIITM Gwalior": "Atal Bihari Vajpayee Indian Institute of Information Technology and Management Gwalior",
     "IIIT Bangalore":    "International Institute of Information Technology Bangalore",
+    "IIIT Hyderabad":    "International Institute of Information Technology Hyderabad",
+    "IIIT Delhi":        "Indraprastha Institute of Information Technology Delhi",
 }
-# categorical slots 1-3 of the validated reference palette (CVD-safe all-pairs)
+# categorical slots 1-4 and 7 of the validated reference palette (slot 5 magenta is
+# kept free for 'links between institutes' highlights)
 INST_COLORS = {
     "IIIT Allahabad":    "#2a78d6",
     "ABV-IIITM Gwalior": "#eb6834",
     "IIIT Bangalore":    "#1baf7a",
+    "IIIT Hyderabad":    "#eda100",
+    "IIIT Delhi":        "#6250d6",
 }
 INST_COLORS_DARK = {
     "IIIT Allahabad":    "#3987e5",
     "ABV-IIITM Gwalior": "#d95926",
     "IIIT Bangalore":    "#199e70",
+    "IIIT Hyderabad":    "#c98500",
+    "IIIT Delhi":        "#9085e9",
 }
 # ordinal blue ramp for ranked tiers (Q1 / A* darkest), grey = unranked
 TIER_COLORS = ["#184f95", "#2a78d6", "#5598e7", "#86b6ef", "#c9c8c2"]
@@ -67,6 +78,7 @@ INFLOW_CACHE     = os.path.join(CACHE_DIR, "inflow_citing_works.json.gz")
 OUTFLOW_CACHE    = os.path.join(CACHE_DIR, "outflow_cited_works.json.gz")
 AUTHORS_CACHE    = os.path.join(CACHE_DIR, "authors.json.gz")
 TOPICS_CACHE     = os.path.join(CACHE_DIR, "subfield_profiles.json.gz")
+SOURCES_CACHE    = os.path.join(CACHE_DIR, "sources.json.gz")
 
 REFERENCE_DIR    = "reference"
 OUT_DIR          = "outputs"
@@ -142,7 +154,12 @@ class OpenAlex:
                 self.remaining = int(rem)
             if resp.status_code == 200:
                 time.sleep(self.delay)
-                return resp.json()
+                try:
+                    return resp.json()
+                except ValueError:          # truncated body - retry
+                    print(f"    [network] incomplete JSON (retry {attempt + 1})")
+                    time.sleep(3 * (attempt + 1))
+                    continue
             if resp.status_code == 429:
                 if self.remaining is not None and self.remaining <= 0:
                     raise BudgetExhausted("OpenAlex daily budget exhausted (HTTP 429)")
@@ -714,6 +731,16 @@ def effective_citations(wid, works, aliases_of):
     credits the citations to a repository/preprint copy)."""
     return max([works[wid].get("cited_by_count") or 0] +
                [works[a].get("cited_by_count") or 0 for a in aliases_of.get(wid, [])])
+
+
+IF_BANDS = (">=10", "5-10", "<5")
+
+
+def if_band(v):
+    """Impact-factor band of a journal (None/NaN -> '' = no value)."""
+    if v is None or v != v:
+        return ""
+    return ">=10" if v >= 10 else ("5-10" if v >= 5 else "<5")
 
 
 def most_common_nonempty(values):

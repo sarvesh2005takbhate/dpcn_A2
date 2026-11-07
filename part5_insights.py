@@ -100,7 +100,7 @@ def growth_and_quality(df):
 
 
 def normalised_impact(df):
-    """Field-, year- and type-normalised citation score within the three institutes."""
+    """Field-, year- and type-normalised citation score within the five institutes."""
     u = A.unique_papers(df).copy()
     u = u[u["year"] <= CITATION_WINDOW_END]
     u["field2"] = u["field"].replace("", "Unknown")
@@ -249,7 +249,12 @@ def authorship_tests(auth_edges, am):
     n, m = gc.number_of_nodes(), gc.number_of_edges()
     k = 2 * m / n
     cc = nx.average_clustering(gc)
-    L = nx.average_shortest_path_length(gc)
+    if n <= 6000:
+        L = nx.average_shortest_path_length(gc)
+    else:   # seeded sample of 2,000 source authors (all targets) - same as part5b
+        src = np.random.default_rng(42).choice(sorted(gc), 2000, replace=False)
+        L = float(np.mean([sum(d.values()) / (len(d) - 1)
+                           for d in (nx.single_source_shortest_path_length(gc, x) for x in src)]))
     c_rand, l_rand = k / n, math.log(n) / math.log(k)
     comms = nx.community.louvain_communities(H, weight="weight", seed=42)
     q = nx.community.modularity(H, comms, weight="weight")
@@ -425,7 +430,7 @@ def fig_authorship(auth_edges, am, at):
     H.add_edges_from((a, b) for a, b in zip(inn["author_a_id"], inn["author_b_id"]) if a in top and b in top)
     H = H.subgraph(max(nx.connected_components(H), key=len)).copy()
     big = [c["id"] for c in am["communities"][:7]]
-    abbr = {"IIIT Allahabad": "IIITA", "ABV-IIITM Gwalior": "ABV", "IIIT Bangalore": "IIITB"}
+    abbr = C.INST_ABBR
     pal = ["#2a78d6", "#eb6834", "#1baf7a", "#eda100", "#e87ba4", "#008300", "#6250d6"]
     col = [pal[big.index(nodes[n]["community"])] if nodes[n]["community"] in big else "#c9c8c2" for n in H]
     pos = nx.spring_layout(H, k=1.6 / math.sqrt(len(H)), iterations=100, seed=3)
@@ -450,7 +455,7 @@ def fig_authorship(auth_edges, am, at):
         xs = np.sort(np.unique(v))
         ccdf = [(v >= x).mean() for x in xs]
         ax.loglog(xs, ccdf, "o", ms=3, color=c, label=lab)
-    ax.set_xlabel("co-authors at the three institutes (degree)")
+    ax.set_xlabel("co-authors at the five institutes (degree)")
     ax.set_ylabel("P(degree ≥ k)")
     ax.set_title("(b) Degree distribution (CCDF): heavy-tailed, faculty-centred", fontsize=9.5)
     ax.legend(fontsize=8)
@@ -492,67 +497,78 @@ def pfmt(p):
     return "p < 0.001" if p < 0.001 else f"p = {p:.3f}" if p < 0.1 else f"p = {p:.2f}"
 
 
+def each(f, sep=", "):
+    """'IIITA x, ABV y, ...' over all institutes."""
+    return sep.join(f"{C.INST_ABBR[i]} {f(i)}" for i in C.INST_NAMES)
+
+
 def findings(I, summ):
     """Key findings as (title, text) pairs, written from the computed numbers."""
     g, ni, cp, rg = I["growth_quality"], I["normalised_impact"], I["collaboration_premium"], I["citation_regression"]
     cn, an, ct, co = I["citation_network"], I["authorship_network"], I["connectivity"], I["concentration"]
     S = summ.set_index("institution")
-    ia, ab, ib = C.INST_NAMES
+    names = C.INST_NAMES
     term = {t["term"]: t for t in rg["terms"]}
     team_b = math.log(1 + term["Team size (log authors)"]["effect_pct"] / 100)
     doubling = (2 ** team_b - 1) * 100
     cv = ct["collab_vs_citation"]
     cross = ct["in_exceeds_out_from"]
+    gr = [g[i]["annual_growth_pct"] for i in names]
+    q_up = [i for i in names if g[i]["q1_share_2022_25"] > g[i]["q1_share_2016_19"] and g[i]["q1_shift_p"] < 0.05]
+    conf = {i: S.loc[i, "conference_papers"] / S.loc[i, "papers"] * 100 for i in names}
+    most_conf = max(names, key=conf.get)
+    nc = [ni[i]["mncs"] for i in names]
+    sh = [cv[i]["share_in_cites_from_coauthor_partners_pct"] for i in names]
+    exporters = [i for i in names if cross.get(i)]
+    importers = [i for i in names if not cross.get(i)]
     return [
-        ("Output more than doubled, at the same pace everywhere",
-         f"Papers grew {g[ia]['annual_growth_pct']}% / {g[ab]['annual_growth_pct']}% / {g[ib]['annual_growth_pct']}% "
-         f"a year (IIITA / ABV / IIITB, log-linear fit 2016–2025, all {pfmt(max(x['growth_p'] for x in g.values()))}): "
-         f"IIITA {g[ia]['papers_2016']}→{g[ia]['papers_2025']}, ABV {g[ab]['papers_2016']}→{g[ab]['papers_2025']}, "
-         f"IIITB {g[ib]['papers_2016']}→{g[ib]['papers_2025']} papers."),
-        ("Quality rose with quantity",
-         f"The Q1 share of journal papers rose from {g[ia]['q1_share_2016_19']}% to {g[ia]['q1_share_2022_25']}% at "
-         f"IIITA and from {g[ab]['q1_share_2016_19']}% to {g[ab]['q1_share_2022_25']}% at ABV between 2016–19 and "
-         f"2022–25 (χ², {pfmt(g[ia]['q1_shift_p'])}). IIITB already started high ({g[ib]['q1_share_2016_19']}% → "
-         f"{g[ib]['q1_share_2022_25']}%, {pfmt(g[ib]['q1_shift_p'])}), so growth did not come at the cost of venue quality."),
-        ("Raw citations exaggerate the gap between institutes",
-         f"IIITB's median paper has {S.loc[ib, 'median_citations']:.0f} citations vs {S.loc[ia, 'median_citations']:.0f} at "
-         f"IIITA, but {S.loc[ib, 'conference_papers'] / S.loc[ib, 'papers'] * 100:.0f}% of its output is conference papers. "
-         f"Normalised for year, field and type, mean impact is {ni[ab]['mncs']} (ABV), {ni[ia]['mncs']} (IIITA) and "
-         f"{ni[ib]['mncs']} (IIITB, 95% CI {ni[ib]['mncs_ci'][0]}–{ni[ib]['mncs_ci'][1]}): a modest, not a large, difference."),
+        ("Output grew at every institute",
+         f"Papers grew {min(gr)}–{max(gr)}% a year (log-linear fit 2016–2025; largest "
+         f"{pfmt(max(x['growth_p'] for x in g.values()))}): "
+         + each(lambda i: f"{g[i]['papers_2016']}→{g[i]['papers_2025']}") + " papers (2016→2025)."),
+        ("Venue quality: where the Q1 share moved",
+         "Q1 share of journal papers, 2016–19 → 2022–25: "
+         + each(lambda i: f"{g[i]['q1_share_2016_19']}%→{g[i]['q1_share_2022_25']}% ({pfmt(g[i]['q1_shift_p'])})", "; ")
+         + f". The rise is significant (χ²) at {', '.join(C.INST_ABBR[i] for i in q_up) or 'none'}; growth did not "
+           "come at the cost of venue quality."),
+        (f"Normalised impact is highest at {C.INST_ABBR[max(names, key=lambda i: ni[i]['mncs'])]}; "
+         f"conference-heavy {C.INST_ABBR[most_conf]} is lowest on raw counts",
+         f"Median citations per paper: " + each(lambda i: f"{S.loc[i, 'median_citations']:.0f}") + ". "
+         f"{C.INST_ABBR[most_conf]} publishes the largest conference share ({conf[most_conf]:.0f}%). Normalised for year, "
+         f"field and type, mean impact (MNCS) is " + each(lambda i: ni[i]["mncs"])
+         + f", a range of {min(nc)}–{max(nc)}."),
         ("Impact is carried by a few papers",
-         f"Citation Gini is {co[ia]['gini_citations']}–{co[ab]['gini_citations']}; the top 10% of papers collect "
+         f"Citation Gini is {min(x['gini_citations'] for x in co.values())}–{max(x['gini_citations'] for x in co.values())}; "
+         f"the top 10% of papers collect "
          f"{min(x['top10pct_paper_citation_share'] for x in co.values())}–"
          f"{max(x['top10pct_paper_citation_share'] for x in co.values())}% of all citations. Among core faculty the "
          f"top 20% write {min(x['top20pct_faculty_paper_share'] for x in co.values())}–"
          f"{max(x['top20pct_faculty_paper_share'] for x in co.values())}% of papers, and output and h-index move together "
          f"(Spearman ρ = {I['faculty']['papers_vs_h_spearman']})."),
-        ("The 'international premium' is really a venue and team-size effect",
+        ("The 'international premium' is mostly a venue and team-size effect",
          f"Internationally co-authored papers score {cp['International']['mean_ncs']} vs "
          f"{cp['Single institute']['mean_ncs']} for single-institute papers (Mann–Whitney "
          f"{pfmt(cp['International']['mwu_p_vs_single'])}). Once venue, type, team size, year and field are held fixed "
          f"(OLS, n = {rg['n']:,}), the international effect is {term['International co-author']['effect_pct']:+.0f}% "
-         f"(n.s.), while a Q1 venue adds {term['Q1 journal']['effect_pct']:+.0f}%, a conference venue "
-         f"{term['Conference paper']['effect_pct']:+.0f}%, and doubling the team {doubling:+.0f}%."),
+         f"({pfmt(term['International co-author']['p'])}), while a Q1 venue adds {term['Q1 journal']['effect_pct']:+.0f}%, "
+         f"a conference venue {term['Conference paper']['effect_pct']:+.0f}%, and doubling the team {doubling:+.0f}%."),
         ("Internal citation is almost entirely self-citation",
-         f"{cn['author_self_citation_pct']}% of the {cn['internal_edges']:,} citations between papers of the three "
+         f"{cn['author_self_citation_pct']}% of the {cn['internal_edges']:,} citations between papers of the five "
          f"institutes share an author, and {cn['same_institution_pct']}% stay inside the citing institute versus "
          f"{cn['same_institution_null_pct']}% expected when targets are shuffled (z = {cn['homophily_z']}). Only "
          f"{cn['non_self_edges']} links connect different research groups, so internal PageRank mostly measures group "
          f"continuity rather than cross-group influence."),
         ("Citations follow collaboration, not topic overlap",
-         f"Institutes that co-author more with us also cite us more (Spearman ρ = {cv[ia]['spearman']} / "
-         f"{cv[ab]['spearman']} / {cv[ib]['spearman']}, all {pfmt(max(x['p'] for x in cv.values()))}). Co-author "
-         f"partners are about a third of the Indian institutes that cite us but supply "
-         f"{cv[ib]['share_in_cites_from_coauthor_partners_pct']}–{cv[ia]['share_in_cites_from_coauthor_partners_pct']}% "
-         f"of those citations. Topic similarity does not predict who we collaborate with "
-         f"(ρ = {ct['topic_similarity_vs_collaboration']['spearman']}, "
+         f"Institutes that co-author more with us also cite us more (Spearman ρ: "
+         + each(lambda i: cv[i]["spearman"]) + f"; all {pfmt(max(x['p'] for x in cv.values()))}). Co-author "
+         f"partners supply {min(sh)}–{max(sh)}% of the citations from other Indian institutes. Topic similarity does "
+         f"not predict who we collaborate with (ρ = {ct['topic_similarity_vs_collaboration']['spearman']}, "
          f"{pfmt(ct['topic_similarity_vs_collaboration']['p'])})."),
-        ("From citation importers to exporters",
-         f"Per year, ABV has received more citations from other Indian institutes than it gives since "
-         f"{cross[ab]} and IIITA since {cross[ia]}; IIITB is still below parity (2025 ratio "
-         f"{ct['ratio_by_year'][ib]['2025']}). Summed over 2016–2026, IIITA ({I['flow_totals'][ia]}) and ABV "
-         f"({I['flow_totals'][ab]}) are near balance while IIITB ({I['flow_totals'][ib]}) remains a net importer "
-         f"of Indian citations."),
+        ("Citation importers and exporters",
+         "Year from which an institute receives more citations from other Indian institutes than it gives: "
+         + each(lambda i: cross.get(i) or "not yet") + ". Summed impact ratio (in/out), 2016–2026: "
+         + each(lambda i: I["flow_totals"][i]) + "."
+         + (f" Net importers: {', '.join(C.INST_ABBR[i] for i in importers)}." if importers else "")),
     ]
 
 

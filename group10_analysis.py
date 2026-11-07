@@ -49,16 +49,22 @@ def load_outputs():
             if col in df:
                 df[col] = _bool(df[col])
         df["n_authors"] = pd.to_numeric(df["n_authors"], errors="coerce").fillna(0).astype(int)
+        if "impact_factor" in df:
+            df["impact_factor"] = pd.to_numeric(df["impact_factor"], errors="coerce")
     fac = _read_csv(C.FACULTY_CSV)
     if not fac.empty:
         for col in ("papers", "citations", "h_index", "journal_papers", "conference_papers",
-                    "q1_papers", "astar_a_papers", "active_years"):
-            fac[col] = pd.to_numeric(fac[col], errors="coerce").fillna(0).astype(int)
+                    "q1_papers", "astar_a_papers", "active_years", "q2_papers", "q3_papers", "q4_papers",
+                    "if_gt5_papers", "if_gt10_papers"):
+            if col in fac:
+                fac[col] = pd.to_numeric(fac[col], errors="coerce").fillna(0).astype(int)
         fac["h_index_lifetime_openalex"] = pd.to_numeric(fac["h_index_lifetime_openalex"], errors="coerce")
         fac["is_core_faculty"] = _bool(fac["is_core_faculty"])
     adf = _read_csv(C.AUTHORSHIPS_CSV)
     if not adf.empty:
         adf["year"] = pd.to_numeric(adf["year"], errors="coerce").astype("Int64")
+        if "impact_factor" in adf:
+            adf["impact_factor"] = pd.to_numeric(adf["impact_factor"], errors="coerce")
     return {
         "df": df, "fac": fac, "adf": adf,
         "jaccard": _read_csv(C.JACCARD_CSV),
@@ -70,6 +76,7 @@ def load_outputs():
         "flow": _read_json(C.FLOW_JSON),
         "insights": _read_json(C.INSIGHTS_JSON),
         "structure": _read_json(C.STRUCTURE_JSON),
+        "ext": _read_json(os.path.join(C.OUT_DIR, "group10_extensions.json")),
     }
 
 

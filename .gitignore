@@ -44,3 +44,10 @@ outputs/charts/f4_authorship_network.png
 outputs/charts/11_authorship_network.png
 # personal presentation notes (local only)
 explanation.txt
+
+# local backups of the 3-institute run
+cache_backup_3inst/
+outputs_backup_3inst/
+
+# institute student lists (personal data scraped for role matching; local only)
+reference/faculty_rosters/*_students.csv

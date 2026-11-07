@@ -1,7 +1,7 @@
 """
 DPCN 2026 - Group 10: Research Mapping Dashboard (Streamlit)
 =============================================================
-IIIT Allahabad · ABV-IIITM Gwalior · IIIT Bangalore, 2016-2026.
+IIIT Allahabad · ABV-IIITM Gwalior · IIIT Bangalore · IIIT Hyderabad · IIIT Delhi, 2016-2026.
 
 Run locally:      streamlit run app.py
 Data files come from part1 -> part1b -> part2 (see README.md). The sidebar
@@ -94,7 +94,7 @@ adf = adf_all[adf_all["openalex_id"].isin(ids) & adf_all["institution"].isin(sel
 fac = faculty_stats(adf, fac_all)
 fac_view = fac[fac["is_core_faculty"]] if core_only and not fac.empty else fac
 
-st.title("Research output of three IIITs, 2016–2026")
+st.title("Research output of five IIITs, 2016–2026")
 st.caption(" · ".join(sel) + f" · {yr[0]}–{yr[1]} · {ptype} papers · {len(A.unique_papers(df)):,} unique papers")
 
 tabs = st.tabs(["Overview", "Institutions & faculty", "Citation network", "Authorship network",
@@ -258,7 +258,7 @@ with tabs[2]:
                     f"{s['cross_institution_internal_edges']} across institutes", delta_color="off")
         m[2].metric("Papers cited internally", f"{s['papers_cited_internally']:,}")
         m[3].metric("Largest weak component", f"{s['largest_weak_component']:,}")
-        st.caption("Metrics are computed on the internal graph (papers of the three institutes citing each other). "
+        st.caption("Metrics are computed on the internal graph (papers of the five institutes citing each other). "
                    "Edges to/from other Indian institutes are in citation_network.csv (edge_type).")
         internal = edges[(edges["edge_type"] == "internal") & edges["source_openalex_id"].isin(ids)
                          & edges["target_openalex_id"].isin(ids)]

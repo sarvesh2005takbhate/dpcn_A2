@@ -26,6 +26,12 @@ Key definitions
 * core faculty  heuristic for permanent faculty (PI pattern): >=5 papers at the
                 institution in >=3 distinct years, last author on >=30% of them and
                 first author on <=50% (excludes most PhD students)
+* role          faculty / student classification: names matched against the official
+                faculty and PhD-scholar lists on the institute websites
+                (reference/faculty_rosters/, group10_roles.py); authors not on any list
+                get a heuristic label from their authorship pattern
+* impact_factor journals: OpenAlex 2-year mean citedness of the venue (same formula as
+                the Journal Impact Factor, open data); if_band = ">=10" / "5-10" / "<5"
 
 Usage:
     python part1b_enrich_data.py
@@ -38,6 +44,7 @@ from itertools import combinations
 import pandas as pd
 
 import group10_common as C
+import group10_roles as R
 
 MIN_SUBFIELD_SHARE = 0.01     # subfields below 1% of an entity's output are noise
 TOP_PARTNERS = 10
@@ -191,6 +198,10 @@ def build_dataset(works, inflow, outflow):
             if r in outflow:
                 cited_by_paper[wid].append(outflow[r])
 
+    sources = C.load_json_gz(C.SOURCES_CACHE, {})
+    print(f"  Venue metrics for {sum(1 for v in sources.values() if v.get('if2') is not None)} venues "
+          "(OpenAlex 2-year mean citedness = impact-factor proxy)")
+
     rows, auth_rows = [], []
     for wid, (ptype, venue) in corpus.items():
         w = works[wid]
@@ -198,6 +209,9 @@ def build_dataset(works, inflow, outflow):
         sjr_q = scimago.quartile(venue, w["year"]) if venue["name"] else ""
         core_rank = core.rank(venue["name"]) if ptype == "conference" else ""
         quartile = sjr_q if ptype == "journal" else core_rank
+        if2 = (sources.get(venue.get("sid") or "", {}) or {}).get("if2") if ptype == "journal" else None
+        if2 = round(float(if2), 2) if if2 is not None else None
+        if_band = C.if_band(if2)
         all_names = [a["name"] for a in w["authorships"]]
         n_auth = len(all_names)
         our_insts = C.our_institutions_on(w)
@@ -233,6 +247,8 @@ def build_dataset(works, inflow, outflow):
                 "openalex_id": wid,
                 "sjr_quartile": sjr_q,
                 "core_rank": core_rank,
+                "impact_factor": if2,
+                "if_band": if_band,
                 "venue_source_type": venue["stype"],
                 "field": w["field"],
                 "subfield": w["subfield"],
@@ -260,7 +276,7 @@ def build_dataset(works, inflow, outflow):
                     "author_position": a["pos"], "is_corresponding": a["corr"],
                     "department_affiliation": a["dept"], "citations": cites,
                     "type": ptype, "journal_name": venue["name"], "quartile": quartile,
-                    "field": w["field"],
+                    "impact_factor": if2, "if_band": if_band, "field": w["field"],
                 })
 
     df = pd.DataFrame(rows).sort_values(["institution", "year", "citations"],
@@ -306,6 +322,11 @@ def build_faculty(adf, oa):
             "journal_papers": int((papers["type"] == "journal").sum()),
             "conference_papers": int((papers["type"] == "conference").sum()),
             "q1_papers": int((papers["quartile"] == "Q1").sum()),
+            "q2_papers": int((papers["quartile"] == "Q2").sum()),
+            "q3_papers": int((papers["quartile"] == "Q3").sum()),
+            "q4_papers": int((papers["quartile"] == "Q4").sum()),
+            "if_gt5_papers": int((papers["impact_factor"].fillna(0) >= 5).sum()),
+            "if_gt10_papers": int((papers["impact_factor"].fillna(0) >= 10).sum()),
             "astar_a_papers": int(papers["quartile"].isin(["A*", "A"]).sum()),
             "citations": int(papers["citations"].sum()),
             "h_index": C.hindex(papers["citations"]),
@@ -348,6 +369,7 @@ def build_faculty(adf, oa):
 
     fac["h_index_lifetime_openalex"] = fac["openalex_author_ids"].map(lambda s: lifetime(s, "h"))
     fac["works_lifetime_openalex"] = fac["openalex_author_ids"].map(lambda s: lifetime(s, "works"))
+    fac = R.assign_roles(fac)
     return fac.sort_values(["institution", "is_core_faculty", "citations"], ascending=[True, False, False])
 
 

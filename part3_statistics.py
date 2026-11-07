@@ -108,7 +108,7 @@ def chart_quartiles(df):
 
 
 def chart_hindex(fac):
-    fig, axes = plt.subplots(1, 3, figsize=(14, 4), sharey=True)
+    fig, axes = plt.subplots(1, len(C.INST_NAMES), figsize=(4.4 * len(C.INST_NAMES), 4), sharey=True)
     for ax, inst in zip(axes, C.INST_NAMES):
         f = fac[(fac["institution"] == inst) & fac["is_core_faculty"]]
         h = f["h_index"].values
@@ -127,7 +127,7 @@ def chart_hindex(fac):
 
 
 def chart_top_journals(df):
-    fig, axes = plt.subplots(1, 3, figsize=(16, 4.2))
+    fig, axes = plt.subplots(1, len(C.INST_NAMES), figsize=(5.4 * len(C.INST_NAMES), 4.2))
     for ax, inst in zip(axes, C.INST_NAMES):
         t = A.top_venues(df, inst, "journal", 5)
         ax.barh([short(n, 38) for n in t["journal_name"]], t["papers"], color=COLORS[inst], height=0.55)
@@ -262,7 +262,7 @@ def chart_flow(flow):
 
 
 def chart_partners(indian, flow):
-    fig, axes = plt.subplots(3, 1, figsize=(10, 12), sharex=True)
+    fig, axes = plt.subplots(len(C.INST_NAMES), 1, figsize=(10, 4 * len(C.INST_NAMES)), sharex=True)
     for ax, inst in zip(axes, C.INST_NAMES):
         t = A.top_partners(indian, inst, 10)
         labels = [f"{short(p, 48)}  [{cl}]" for p, cl in zip(t["partner_inst"], t["partner_cluster"])]
@@ -308,7 +308,7 @@ def chart_authorship(am):
     ax.set_ylabel("Authors")
     ax.grid(axis="x", visible=False)
     ax.legend(fontsize=8)
-    fig.suptitle("Co-authorship network of the three institutes", x=0.01, ha="left", fontweight="bold")
+    fig.suptitle("Co-authorship network of the five institutes", x=0.01, ha="left", fontweight="bold")
     save(fig, "11_authorship_network.png")
 
 
@@ -356,7 +356,7 @@ def md_table(df, floatfmt=None):
 
 def write_summary(o):
     df, fac, flow, cm, am = o["df"], o["fac"], o["flow"], o["cite_metrics"], o["auth_metrics"]
-    L = ["# Group 10 – Statistics summary (IIIT Allahabad, ABV-IIITM Gwalior, IIIT Bangalore)", "",
+    L = ["# Group 10 – Statistics summary (IIIT Allahabad, ABV-IIITM Gwalior, IIIT Bangalore, IIIT Hyderabad, IIIT Delhi)", "",
          "Source: OpenAlex (collected 2026), Scimago SJR (year-matched), ICORE2026. Journal and "
          "conference papers only; 2026 is a partial year.", ""]
     s = A.institution_summary(df, fac)
