@@ -19,7 +19,7 @@ after the first review — see [Review additions](#review-additions-november-202
 > the institutes (9,451 people, mostly students); see
 > [DECISIONS.md §5](DECISIONS.md#5-review-additions-november-2026).
 
-* **Live dashboard: <https://heroic-gumdrop-32cb8b.netlify.app/>** (Netlify)
+* **Live dashboard: <https://endearing-mooncake-9a00d5.netlify.app/>** (Netlify)
 * **Report:** [10_IIIT.pdf](10_IIIT.pdf) (6 pages)
 * **Decision log:** [DECISIONS.md](DECISIONS.md)
 
@@ -355,7 +355,7 @@ the numbers above.
 
 ## Deployment
 
-**Live:** <https://heroic-gumdrop-32cb8b.netlify.app/>, hosted on Netlify and
+**Live:** <https://endearing-mooncake-9a00d5.netlify.app/>, hosted on Netlify and
 deployed with Netlify Drop from a local build of `site/`. It was checked after
 deployment: the served page matches the local build apart from a comment Netlify
 adds, and every page renders without errors.
