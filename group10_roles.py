@@ -46,9 +46,12 @@ _TITLES = {"dr", "prof", "professor", "mr", "mrs", "ms", "shri", "smt", "sri", "
 
 def name_tokens(name):
     n = re.sub(r"\(.*?\)", " ", str(name or "")).lower()
-    n = re.sub(r"[.\-‐_,']", " ", n)
-    toks = [t for t in n.split() if t and t not in _TITLES]
+    n = re.sub(r"[.\-‐_,'’`´́]", " ", n)
+    toks = [_ABBR.get(t, t) for t in n.split() if t and t not in _TITLES]
     return toks
+
+
+_ABBR = {"kr": "kumar", "md": "mohammad", "mohd": "mohammad", "mohammed": "mohammad", "muhammad": "mohammad"}
 
 
 def _first_ok(a, b):
@@ -91,7 +94,8 @@ def _match_score(at, rt):
     if at == rt:
         return 3
     if at[-1] == rt[-1] and _first_ok(at[0], rt[0]) and _compatible_middles(at, rt):
-        if at[-1] in COMMON_SURNAMES and ({t for t in at[1:-1] if len(t) > 1} != {t for t in rt[1:-1] if len(t) > 1}):
+        if at[-1] in COMMON_SURNAMES and ({t for t in at[1:-1] if len(t) > 1} - {"kumar"} !=
+                                         {t for t in rt[1:-1] if len(t) > 1} - {"kumar"}):
             return 0
         if at[0] == rt[0]:
             return 2
@@ -99,7 +103,47 @@ def _match_score(at, rt):
     # surname-first order ("Varadwaj Pritish Kumar"), full names only
     if len(at[0]) > 1 and len(rt[0]) > 1 and at[0] == rt[-1] and at[-1] == rt[0]:
         return 1
+    # any order, parts dropped or written as initials ("Jawahar C V" = "C. V. Jawahar",
+    # "Bapi Raju S" = "Raju Surampudi Bapi", "V. Raghava Mutharaju" = "Raghava Mutharaju")
+    short, long_ = (at, rt) if len(at) <= len(rt) else (rt, at)
+    fit = _assign(short, long_)
+    if fit is None and len(at) == len(rt):
+        short, long_ = rt, at
+        fit = _assign(short, long_)
+    if fit is not None:
+        full_eq, n_init, rest = fit
+        extra_full = [t for t in rest if len(t) > 1 and t != "kumar"]
+        common = any(t in COMMON_SURNAMES for t in short if len(t) > 1)
+        if full_eq >= 2 and not (common and extra_full):
+            return 1
+        if full_eq == 1 and n_init >= 1 and not rest and not common:
+            return 1
+    # the same name written with or without spaces ("Shashi Kant Rai" / "Shashikant Rai")
+    if "".join(at) == "".join(rt) and len("".join(at)) >= 8:
+        return 1
     return 0
+
+
+def _assign(short, long_):
+    """Pair every part of the shorter name with a different part of the longer one
+    (full parts must be equal, an initial pairs with a part starting with that
+    letter). Returns (equal full parts, paired initials, unpaired parts) or None."""
+    rest = list(long_)
+    full_eq = n_init = 0
+    for t in short:
+        if len(t) > 1:
+            if t not in rest:
+                return None
+            rest.remove(t)
+            full_eq += 1
+    for t in short:
+        if len(t) == 1:
+            cand = sorted((x for x in rest if x[0] == t), key=len)
+            if not cand:
+                return None
+            rest.remove(cand[0])
+            n_init += 1
+    return full_eq, n_init, rest
 
 
 def load_rosters():
@@ -139,7 +183,7 @@ def assign_roles(fac):
     """Add role, role_source, roster_designation, roster_department columns."""
     rosters = load_rosters()
     fac = fac.copy()
-    roles, src, desig, dept = [], [], [], []
+    roles, src, desig, dept, rname = [], [], [], [], []
     prepared = {}
     for inst, (fr, sr) in rosters.items():
         fl = [(name_tokens(r["name"]), r) for r in fr.to_dict("records")] if len(fr) else []
@@ -159,6 +203,7 @@ def assign_roles(fac):
                 src.append("institute faculty list")
                 desig.append(hit.get("designation", ""))
                 dept.append(hit.get("department", ""))
+                rname.append(hit.get("name", ""))
                 continue
         hit, role = _best(at, phd), "PhD scholar"
         if hit is None:
@@ -168,15 +213,18 @@ def assign_roles(fac):
             src.append("institute student list")
             desig.append(hit.get("program", ""))
             dept.append(hit.get("department", ""))
+            rname.append("")
             continue
         roles.append(heuristic_role(r))
         src.append("heuristic (authorship pattern)")
         desig.append("")
         dept.append("")
+        rname.append("")
     fac["role"] = roles
     fac["role_source"] = src
     fac["roster_designation"] = desig
     fac["roster_department"] = dept
+    fac["roster_name"] = rname
     return fac
 
 
@@ -219,3 +267,20 @@ def roster_sources():
         if "source_url" in d:
             out[os.path.basename(path)] = sorted(set(u for u in d["source_url"] if u))[:12]
     return out
+
+
+# ── faculty rank (the faculty-only analysis groups faculty by designation) ──
+RANKS = ["Professor", "Associate Professor", "Assistant Professor", "Other"]
+
+
+def rank_of(designation):
+    """Professor / Associate Professor / Assistant Professor / Other, from the
+    designation text on the faculty list ("Professor & Dean (Faculty)" -> Professor)."""
+    d = str(designation or "").lower()
+    if "assistant professor" in d:
+        return "Assistant Professor"
+    if "associate professor" in d:
+        return "Associate Professor"
+    if "professor" in d or "director" in d:
+        return "Professor"
+    return "Other"

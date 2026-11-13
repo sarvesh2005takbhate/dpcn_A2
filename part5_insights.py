@@ -14,7 +14,7 @@ Goes beyond descriptive counts. Every claim is tested against a baseline:
                     target-shuffled graphs; PageRank with self-citations removed
   authorship        small-world sigma, Louvain modularity vs configuration-model
   network           graphs, institution assortativity, community-department NMI,
-                    core faculty vs other authors
+                    Professors vs other faculty
   connectivity      do partners we co-author with also cite us? (Spearman),
                     yearly in/out citation ratio, topic similarity vs collaboration
 
@@ -267,8 +267,11 @@ def authorship_tests(auth_edges, am):
     nx.set_node_attributes(H, {k2: v["institution"] for k2, v in nodes.items()}, "inst")
     core_ids = [k2 for k2, v in nodes.items() if v["is_core_faculty"] and v["department"]]
     deg = dict(H.degree())
-    core_deg = [deg[k2] for k2 in nodes if nodes[k2]["is_core_faculty"]]
-    other_deg = [deg[k2] for k2 in nodes if not nodes[k2]["is_core_faculty"]]
+    # every node is listed faculty: compare Professors with the other ranks
+    fr = pd.read_csv(C.FACULTY_CSV, dtype=str, encoding="utf-8-sig")
+    rank = dict(zip(fr["author_id"], fr.get("rank", pd.Series("", index=fr.index))))
+    core_deg = [deg[k2] for k2 in nodes if rank.get(k2) == "Professor"]
+    other_deg = [deg[k2] for k2 in nodes if rank.get(k2) != "Professor"]
     mw = stats.mannwhitneyu(core_deg, other_deg)
     inter_pairs = inn[inn["edge_scope"] == "inter_group"][["author_a_id", "author_b_id"]].drop_duplicates()
     inter_papers = auth_edges[auth_edges["edge_scope"] == "inter_group"]["paper_doi"].nunique()
@@ -438,26 +441,26 @@ def fig_authorship(auth_edges, am, at):
     ax = axes[0]
     nx.draw_networkx_edges(H, pos, ax=ax, width=0.3, edge_color="#b5b4ae", alpha=0.5)
     nx.draw_networkx_nodes(H, pos, ax=ax, node_size=[5 + nodes[n]["degree"] * 0.5 for n in H], node_color=col,
-                           linewidths=[0.8 if nodes[n]["is_core_faculty"] else 0 for n in H], edgecolors=INK)
+                           linewidths=0, edgecolors=INK)
     for k2, c in enumerate(am["communities"][:7]):
         dom = max(c["institutions"], key=c["institutions"].get)
         ax.scatter([], [], color=pal[k2], s=20,
-                   label=f"C{c['id']} · {abbr[dom]} · {c['size']} authors · {short(c['top_authors'][0], 22)}")
+                   label=f"C{c['id']} · {abbr[dom]} · {c['size']} faculty · {short(c['top_authors'][0], 22)}")
     ax.legend(fontsize=6.5, loc="upper center", bbox_to_anchor=(0.5, 0.0), ncol=2, frameon=False)
-    ax.set_title("(a) Co-authorship core: 450 most-connected authors,\ncolour = Louvain community, ring = core faculty",
+    ax.set_title(f"(a) Faculty co-authorship network ({H.number_of_nodes()} most-connected faculty),\ncolour = Louvain community",
                  fontsize=9.5)
     ax.axis("off")
     ax = axes[1]
-    for vals, lab, c in [(at["degree_values"], "all authors", C.TIER_COLORS[2]),
-                         (at["core_degree_values"], "core faculty", C.TIER_COLORS[0])]:
+    for vals, lab, c in [(at["degree_values"], "all faculty", C.TIER_COLORS[2]),
+                         (at["core_degree_values"], "Professors", C.TIER_COLORS[0])]:
         v = np.array(vals)
         v = v[v > 0]
         xs = np.sort(np.unique(v))
         ccdf = [(v >= x).mean() for x in xs]
         ax.loglog(xs, ccdf, "o", ms=3, color=c, label=lab)
-    ax.set_xlabel("co-authors at the five institutes (degree)")
+    ax.set_xlabel("faculty co-authors at the five institutes (degree)")
     ax.set_ylabel("P(degree ≥ k)")
-    ax.set_title("(b) Degree distribution (CCDF): heavy-tailed, faculty-centred", fontsize=9.5)
+    ax.set_title("(b) Degree distribution (CCDF): Professors have more faculty co-authors", fontsize=9.5)
     ax.legend(fontsize=8)
     fig.tight_layout()
     save(fig, "f4_authorship_network.png")
@@ -541,7 +544,7 @@ def findings(I, summ):
          f"Citation Gini is {min(x['gini_citations'] for x in co.values())}–{max(x['gini_citations'] for x in co.values())}; "
          f"the top 10% of papers collect "
          f"{min(x['top10pct_paper_citation_share'] for x in co.values())}–"
-         f"{max(x['top10pct_paper_citation_share'] for x in co.values())}% of all citations. Among core faculty the "
+         f"{max(x['top10pct_paper_citation_share'] for x in co.values())}% of all citations. Among faculty the "
          f"top 20% write {min(x['top20pct_faculty_paper_share'] for x in co.values())}–"
          f"{max(x['top20pct_faculty_paper_share'] for x in co.values())}% of papers, and output and h-index move together "
          f"(Spearman ρ = {I['faculty']['papers_vs_h_spearman']})."),

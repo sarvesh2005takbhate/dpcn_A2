@@ -37,6 +37,7 @@ Usage:
     python part1b_enrich_data.py
 """
 
+import json
 import sys
 from collections import Counter, defaultdict
 from itertools import combinations
@@ -293,6 +294,119 @@ def build_dataset(works, inflow, outflow):
 
 
 # ─────────────────────────────────────────────
+# FACULTY SELECTION (unit of analysis = listed faculty)
+# ─────────────────────────────────────────────
+
+def select_faculty(df, adf, works):
+    """Restrict the study to the faculty on the official institute lists.
+
+    The course asks for *faculty* publications and faculty-level analysis, so the
+    unit of analysis is a person on the institute's published faculty list
+    (reference/faculty_rosters/<slug>_faculty.csv, role == "faculty"; adjunct,
+    visiting and staff entries are excluded). Each author record (after the
+    identity resolution above) is matched to the list with the conservative
+    name rules of group10_roles. One listed person can match several OpenAlex
+    records (split profiles, spelling variants). They become ONE faculty node:
+    the record with most papers is the anchor and another record joins it only
+    if it never appears on the same paper and shares at least one co-author
+    with the records already joined (same evidence rule as section 2 of
+    DECISIONS.md). Records that fail stay out of the faculty set.
+
+    Returns (faculty-only dataset, faculty-only authorships, roster audit).
+    """
+    t = (adf.groupby(["institution", "author_id"], sort=False)
+         .agg(name=("author_name", "first"), papers=("openalex_id", "nunique")).reset_index())
+    t["is_core_faculty"] = False
+    t = R.assign_roles(t)
+    hits = t[t["role"] == "Faculty"]
+
+    papers, coauth = defaultdict(set), defaultdict(set)
+    for wid, inst, aid in zip(adf["openalex_id"], adf["institution"], adf["author_id"]):
+        papers[(inst, aid)].add(wid)
+    raw_to_canon = dict(zip(adf["raw_author_id"], adf["author_id"]))
+    for (inst, aid), ws in papers.items():
+        for wid in ws:
+            coauth[(inst, aid)] |= {raw_to_canon.get(a["aid"], a["aid"])
+                                    for a in works[wid]["authorships"] if a["aid"]}
+        coauth[(inst, aid)].discard(aid)
+
+    to_fac, fac_name, audit = {}, {}, []
+    rosters = R.load_rosters()
+    for inst in C.INST_NAMES:
+        fr = rosters.get(inst, (pd.DataFrame(), None))[0]
+        listed = fr[fr["role"] == "faculty"].drop_duplicates("name") if len(fr) else fr
+        h = hits[hits["institution"] == inst]
+        for r in listed.to_dict("records"):
+            recs = h[h["roster_name"] == r["name"]].sort_values(["papers", "author_id"], ascending=[False, True])
+            base = {"institution": inst, "roster_name": r["name"], "designation": r.get("designation", ""),
+                    "roster_department": r.get("department", ""), "source_url": r.get("source_url", "")}
+            if recs.empty:
+                audit.append(dict(base, status="no papers found", faculty_id="", papers=0,
+                                  merged_records="", separate_records="", needs_manual_check=False))
+                continue
+            ids = list(recs["author_id"])
+            anchor = ids[0]
+            group_p, group_c, merged, separate = set(papers[(inst, anchor)]), set(coauth[(inst, anchor)]), [anchor], []
+            for aid in ids[1:]:
+                p, c = papers[(inst, aid)], coauth[(inst, aid)]
+                if p & group_p:
+                    separate.append(f"{aid} (on a paper with {anchor})")
+                elif not ((c & group_c) - set(merged) - {aid}):
+                    separate.append(f"{aid} (no shared co-author)")
+                else:
+                    merged.append(aid)
+                    group_p |= p
+                    group_c |= c
+            for aid in merged:
+                to_fac[(inst, aid)] = anchor
+            fac_name[(inst, anchor)] = r["name"]
+            surname = R.name_tokens(r["name"])[-1] if R.name_tokens(r["name"]) else ""
+            audit.append(dict(base, status="matched", faculty_id=anchor, papers=len(group_p),
+                              merged_records=";".join(merged), separate_records=";".join(separate),
+                              needs_manual_check=bool(separate) and surname in R.COMMON_SURNAMES))
+
+    keys = list(zip(adf["institution"], adf["author_id"]))
+    fadf = adf[[k in to_fac for k in keys]].copy()
+    fadf["author_id"] = [to_fac[k] for k in zip(fadf["institution"], fadf["author_id"])]
+    fadf["author_name"] = [fac_name[k] for k in zip(fadf["institution"], fadf["author_id"])]
+    fadf = fadf.drop_duplicates(["openalex_id", "institution", "author_id"])
+
+    on_paper = fadf.groupby(["openalex_id", "institution"], sort=False)["author_name"].apply(lambda s: "; ".join(s))
+    idx = pd.MultiIndex.from_arrays([df["openalex_id"], df["institution"]])
+    keep = idx.isin(on_paper.index)
+    fdf = df[keep].copy()
+    fdf["author"] = [on_paper[k] for k in zip(fdf["openalex_id"], fdf["institution"])]
+
+    audit = pd.DataFrame(audit)
+    scope = {"unit": "faculty on the official institute lists (regular posts)", "institutes": {}}
+    for inst in C.INST_NAMES:
+        a = audit[audit["institution"] == inst]
+        ai = adf[adf["institution"] == inst]
+        scope["institutes"][inst] = {
+            "listed_faculty": int(len(a)),
+            "listed_faculty_with_papers": int((a["status"] == "matched").sum()),
+            "papers_all_affiliated_authors": int((df["institution"] == inst).sum()),
+            "papers_with_listed_faculty": int(keep[df["institution"].values == inst].sum()),
+            "affiliated_authors_all": int(ai["author_id"].nunique()),
+            "authorships_all": int(len(ai)),
+            "authorships_listed_faculty": int((fadf["institution"] == inst).sum()),
+        }
+    t_all = {k: sum(v[k] for v in scope["institutes"].values()) for k in next(iter(scope["institutes"].values()))}
+    t_all["papers_all_affiliated_authors"] = int(df["openalex_id"].nunique())
+    t_all["papers_with_listed_faculty"] = int(fdf["openalex_id"].nunique())
+    scope["all"] = t_all
+    with open(C.FACULTY_SCOPE_JSON, "w", encoding="utf-8") as fh:
+        json.dump(scope, fh, indent=1)
+    for inst in C.INST_NAMES:
+        a = audit[audit["institution"] == inst]
+        print(f"    {inst:18s} listed faculty={len(a):4d}  with papers={int((a['status'] == 'matched').sum()):4d}  "
+              f"papers={int(keep[df['institution'].values == inst].sum()):5d} of {int((df['institution'] == inst).sum())}")
+    print(f"  Faculty authorships: {len(fadf)} of {len(adf)}; papers with a listed faculty author: "
+          f"{fdf['openalex_id'].nunique()} of {df['openalex_id'].nunique()}")
+    return fdf, fadf, audit
+
+
+# ─────────────────────────────────────────────
 # FACULTY TABLE
 # ─────────────────────────────────────────────
 
@@ -337,7 +451,9 @@ def build_faculty(adf, oa):
             "active_years": int(years),
             "last_author_share": round(float(last_share), 3),
             "first_author_share": round(float(first_share), 3),
-            "is_core_faculty": bool(n >= 5 and years >= 3 and last_share >= 0.3 and first_share <= 0.5),
+            # every author in the faculty-only dataset is on an official faculty list
+            "is_core_faculty": True,
+            "pi_pattern": bool(n >= 5 and years >= 3 and last_share >= 0.3 and first_share <= 0.5),
             "openalex_author_ids": ";".join(sorted(g["raw_author_id"].unique())),
         })
     fac = pd.DataFrame(rows)
@@ -370,6 +486,9 @@ def build_faculty(adf, oa):
     fac["h_index_lifetime_openalex"] = fac["openalex_author_ids"].map(lambda s: lifetime(s, "h"))
     fac["works_lifetime_openalex"] = fac["openalex_author_ids"].map(lambda s: lifetime(s, "works"))
     fac = R.assign_roles(fac)
+    fac["rank"] = fac["roster_designation"].map(R.rank_of)
+    # the list's own department stays in roster_department: IIITH and IIITD list research
+    # centres / short codes (LTRC, CSTAR, ECE;CSE), which do not compare across institutes
     return fac.sort_values(["institution", "is_core_faculty", "citations"], ascending=[True, False, False])
 
 
@@ -470,6 +589,11 @@ def main():
 
     print("\n[1/3] Building main dataset ...")
     df, adf = build_dataset(works, inflow, outflow)
+    print("  Restricting to faculty on the official institute lists ...")
+    df, adf, roster_audit = select_faculty(df, adf, works)
+    roster_audit.to_csv(C.ROSTER_MATCH_CSV, index=False, encoding="utf-8-sig")
+    print(f"  Saved {C.ROSTER_MATCH_CSV} ({len(roster_audit)} listed faculty; "
+          f"{int(roster_audit['needs_manual_check'].sum())} flagged for manual check)")
     df.to_csv(C.DATA_CSV, index=False, encoding="utf-8-sig")
     adf.to_csv(C.AUTHORSHIPS_CSV, index=False, encoding="utf-8-sig")
     print(f"  Saved {C.DATA_CSV} ({len(df)} rows) and {C.AUTHORSHIPS_CSV} ({len(adf)} rows)")
@@ -484,7 +608,8 @@ def main():
     fac = build_faculty(adf, oa)
     fac.to_csv(C.FACULTY_CSV, index=False, encoding="utf-8-sig")
     core = fac[fac["is_core_faculty"]]
-    print(f"  Saved {C.FACULTY_CSV}: {len(fac)} affiliated authors, {len(core)} core faculty")
+    print(f"  Saved {C.FACULTY_CSV}: {len(fac)} listed faculty with papers "
+          f"({int(fac['pi_pattern'].sum())} also show the PI authorship pattern)")
     print(core.groupby("institution").size().to_string())
 
     print("\n[3/3] Jaccard similarity of research topics (OpenAlex subfields) ...")

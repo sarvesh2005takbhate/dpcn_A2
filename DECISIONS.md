@@ -1,5 +1,12 @@
 # Decision log: data processing and network construction
 
+**Unit of analysis (since November 2026): faculty.** After the instructor's review
+("the analysis should be based on faculties"), every dataset row, network node and
+statistic is restricted to the people on the institutes' official faculty lists and
+to papers with at least one of them as an author. See the first row of
+[section 5](#5-review-additions-november-2026). Sections 1–2 describe the author
+identity step that runs *before* this selection.
+
 This file records the methodological decisions behind the Group 10 pipeline:
 what the code actually does, why, and what remains unresolved. Numbers are from
 the current local run of the pipeline (OpenAlex snapshot collected in 2026). They
@@ -26,22 +33,24 @@ No other source of author identity is used.
 
 | Check | How | Where |
 |---|---|---|
+| The author is faculty of the institute | Name matched to the institute's official faculty list (regular posts) | `part1b_enrich_data.select_faculty`, `group10_roles.py` |
 | The author belongs to one of the five institutes on that paper | The authorship lists the institute's OpenAlex institution ID (`I26072440`, `I9747756`, `I181514455`, `I64189192`, `I119939252`; checked against ROR `03rgjt374`, `008b3ap06`, `05h9eqy10`, `05f11g639`, `03vfp4g33`). Raw affiliation strings are kept for department parsing. | `part1b_enrich_data.affiliated_authorships` |
 | Two records are the same person | Rules in section 2 (OpenAlex ID first, then co-author evidence) | `part1b_enrich_data.resolve_author_identities` |
 | Mega-collaborations do not hide authors | OpenAlex returns at most 100 authorships per work; such works keep the institute through the query that returned them (`found_via`) | `group10_common.our_institutions_on` |
 | Publication metadata | DOI normalisation; versions of the same paper (preprint / repository / published) are merged by normalised title + at least one shared author name, or by identical DOI | `group10_common.select_corpus` |
 
-**What is NOT verified (gap).** No external authority was used. Author identities
-were **not** cross-checked against ORCID, institute faculty pages, IRINS, Scopus
-author IDs or CVs. ORCID iDs are present in OpenAlex but are not stored in the
-compact cache. "Core faculty" is a heuristic (≥5 papers in ≥3 years, last author on
-≥30% and first author on ≤50%), not an official faculty list.
+**What is NOT verified (gap).** Faculty status comes from the institute faculty
+pages (name matching, see section 5), but identities were **not** cross-checked
+against ORCID, IRINS, Scopus author IDs or CVs. ORCID iDs are present in OpenAlex
+but are not stored in the compact cache. The old "core faculty" heuristic (≥5
+papers in ≥3 years, last author on ≥30%, first author on ≤50%) is no longer used to
+select anyone; it survives only as the `pi_pattern` column of the faculty table.
 
 **Proposed procedure (not implemented).**
 1. Store `authorships[].author.orcid` in the cache (requires re-downloading `works`).
-2. For core faculty and every bridge author (about 160 people): match the OpenAlex
-   profile to the institute's faculty page and, where present, ORCID. Record the
-   evidence (URL, date checked) in a reviewed CSV.
+2. For the 50 faculty flagged in `outputs/group10_faculty_roster_match.csv` and
+   every bridge faculty member: check the OpenAlex profile against ORCID and the
+   faculty page. Record the evidence (URL, date checked) in a reviewed CSV.
 3. Treat two OpenAlex IDs that share an ORCID as one person. Never merge IDs whose
    ORCIDs differ.
 4. Re-run the pipeline and report how centrality, bridges and node cuts change.
@@ -75,9 +84,9 @@ authorship without any OpenAlex ID gets a per-paper pseudo ID
 (`noid:<work>:<name>`). It joins another record only under the same four rules;
 otherwise it stays a separate node.
 
-**Outcome (current run).** 4,643 raw records (OpenAlex IDs plus per-paper pseudo
-IDs) resolve to 4,041 authors: 602 merges backed by co-author evidence, and 1,268
-same-name records kept separate. The reasons are: same name but no shared
+**Outcome (current run, before faculty selection).** 10,581 raw records (OpenAlex
+IDs plus per-paper pseudo IDs) resolve to 9,451 authors: 1,130 merges backed by
+co-author evidence, and 1,779 same-name records kept separate. The reasons are: same name but no shared
 co-author, co-occurrence on a paper, or single-token names such as "Sunny" or
 "Abhishek". Same-paper conflicts after resolution: 0. Every decision is written to
 `outputs/group10_author_identity_audit.csv` for manual review. That file is
@@ -87,7 +96,7 @@ private because it contains names.
 identical normalised names. That folded 741 IDs into 295 "people", including 5
 cases where two same-name people on the **same paper** became one node, and 72
 merged nodes spanning two institutes. `part5b_network_structure.identity_sensitivity`
-rebuilds the graph with name-only identities so the effect is measured:
+rebuilt the all-author graph with name-only identities so the effect was measured (three-institute run, before faculty selection):
 
 | | Name-only (old) | Conservative (current) |
 |---|---|---|
@@ -129,29 +138,30 @@ rules) and `group10_analysis.py` (loading and statistics used by every output).
 | 4 | Deduplication | Merge versions of one paper (same normalised title ≥25 chars + shared author name, or same DOI); citations = max over versions; references to an alias are credited to the canonical paper | `select_corpus`, `effective_citations` | corpus → canonical papers + alias map | Preference: journal > conference, named venue, more citations | "duplicate version" count printed |
 | 5 | Venue quality | Scimago quartile of the journal **in the publication year** (±2 years fallback; 2026 → 2025); conferences: strict ICORE2026 match | `Scimago`, `CoreRanks` | venue + year → quartile / rank | Unranked → empty | Workshops never inherit main-track rank |
 | 6 | Author identity | Section 2 | `resolve_author_identities` | authorships → canonical author IDs | Conflicts kept separate; audit CSV | 0 same-paper conflicts |
-| 7 | Five institutes | Each paper gets one row per assigned institute in `group10_data.csv`; each author's *main* institute = where most of their papers are; authors placed at two institutes are flagged | `build_dataset`, `part2_networks.build_authorship` | corpus → dataset rows | Papers shared by two institutes appear twice; use `openalex_id` to deduplicate | 148 papers carry two or more institutes |
-| 8 | Nodes & edges | Citation: paper → paper if A references B (directed, unweighted, self-loops removed). Co-authorship: author–author if they share a paper (undirected, weight = joint papers). Cross-institute edges to other Indian institutes are written to the CSVs only | `part2_networks.py` | dataset + cache → `citation_network.csv`, `authorship_network.csv`, `indian_connections.csv` | Papers with >50 authors add no external edges | Edge-type counts printed |
+| 6b | Faculty selection | Match every author to the institute's official faculty list; join one person's profiles with co-author evidence; keep only faculty authorships and papers with ≥1 listed faculty author (section 5) | `select_faculty` | 9,451 authors, 14,762 papers → 375 faculty, 10,473 papers | Listed faculty without papers recorded; common-name cases flagged | `group10_faculty_roster_match.csv`, `group10_faculty_scope.json` |
+| 7 | Five institutes | Each paper gets one row per institute whose listed faculty are on it in `group10_data.csv`; a faculty member's institute = the list they are on | `build_dataset`, `part2_networks.build_authorship` | corpus → dataset rows | Papers shared by two institutes appear twice; use `openalex_id` to deduplicate | 51 papers carry listed faculty of two institutes |
+| 8 | Nodes & edges | Citation: paper → paper if A references B (directed, unweighted, self-loops removed). Co-authorship: faculty–faculty if they share a paper (undirected, weight = joint papers). Cross-institute edges to other Indian institutes are written to the CSVs only | `part2_networks.py` | dataset + cache → `citation_network.csv`, `authorship_network.csv`, `indian_connections.csv` | Papers with >50 authors add no external edges | Edge-type counts printed |
 | 9 | Network metrics | PageRank, in-degree, degree/betweenness, Louvain; inferential tests; structure and inter-institution analysis | `part2`, `part5_insights.py`, `part5b_network_structure.py` | networks → `outputs/*.json` | Disconnected graphs: path metrics on giant component | Null models, seed stability, sensitivity analysis |
 | 10 | Derived outputs | Report figures, statistics summary, dashboard data | `part3`, `part5`, `part5b`, `part4`, `part6` | JSON/CSV → PNG, PDF, HTML | Missing inputs → empty-state messages | Dashboard and report read the same JSON |
-| 11 | Dashboard & deployment | One self-contained HTML (D3 + Chart.js inlined) written to `dashboard.html` and `site/index.html`; includes the full author index and co-authorship edge list (`people_network`) for search, profiles, paths and growth; deployed by uploading `site/` to Netlify (<https://heroic-gumdrop-32cb8b.netlify.app/>) | `part4_dashboard.py`, `netlify.toml` | JSON → HTML | Global error banner; empty tables say so | Headless-browser render of every page with no JS errors |
+| 11 | Dashboard & deployment | One self-contained HTML (D3 + Chart.js inlined) written to `dashboard.html` and `site/index.html`; includes the full faculty index and co-authorship edge list (`people_network`) for search, profiles, paths and growth; deployed by uploading `site/` to Netlify (<https://heroic-gumdrop-32cb8b.netlify.app/>) | `part4_dashboard.py`, `netlify.toml` | JSON → HTML | Global error banner; empty tables say so | Headless-browser render of every page with no JS errors |
 
 ## 4. Key methodological decisions and trade-offs
 
 | Decision | Rationale | Alternatives considered | Implication |
 |---|---|---|---|
-| **Node = author** (co-authorship), **node = paper** (citation) | Required by the course note; directly observable in OpenAlex | Institution-level graph | Institution-level ties are aggregated from author ties (mixing matrix) |
+| **Node = faculty member** (co-authorship), **node = paper** (citation) | The course asks for faculty publications and faculty-level analysis; the instructor confirmed it after review | All affiliated authors (the earlier version); institution-level graph | Institution-level ties are aggregated from faculty ties (mixing matrix); students are not nodes |
 | **Edge = co-authored ≥1 paper**; weight = joint papers | Observable fact; no claim about informal collaboration | Fractional (1/(n−1)) weights | Large teams create cliques → high clustering by construction |
 | **Undirected, weighted** co-authorship; **directed, unweighted** citation | Natural semantics | — | Path metrics reported only for the co-authorship giant component; the citation graph is almost acyclic with 3,355 weak components |
-| Author's **main institute** = most papers | One colour/group per node is needed for mixing and node cuts | Multi-membership nodes | 35 authors placed at two institutes are flagged and analysed separately |
-| Isolated authors and small components **kept** | They are real (single-author or external-only collaboration) | Drop | Density and giant share are reported for the full graph; paths on the giant component |
-| **Louvain** (seed 42) + stability over 10 seeds | Standard for weighted modular graphs; NMI 0.93–0.95 across seeds | Leiden (proposed; not needed given stability) | Communities are co-writing clusters, not departments (NMI with department 0.43) |
-| **Centralities:** degree, betweenness (exact), closeness, eigenvector | Each answers a different question | — | Eigenvector localises on IIITA (99% of squared mass) → not used to compare institutes |
+| Faculty member's **institute** = the list they are on | One colour/group per node is needed for mixing and node cuts | Main institute by papers | Someone who moved between two IIITs counts only at the institute that lists them now |
+| Isolated faculty and small components **kept** | They are real: 103 faculty publish only with students and external partners | Drop | Density and giant share are reported for the full graph; paths on the giant component |
+| **Louvain** (seed 42) + stability over 10 seeds | Standard for weighted modular graphs; pairwise NMI ≥ 0.99 across seeds | Leiden (proposed; not needed given stability) | Communities are co-writing clusters of faculty |
+| **Centralities:** degree, betweenness (exact), closeness, eigenvector | Each answers a different question | — | Eigenvector localises on ABV (99% of squared mass) → not used to compare institutes |
 | **Baselines:** ER G(n, m); configuration model for modularity and inter-institute links; target-shuffled citation graphs | ER tests "is it random?"; configuration model controls for hubs; shuffling controls for citation volume | — | Departures from these baselines show non-randomness, not causes |
 | Robustness by **static** betweenness order | Simple, interpretable | Adaptive recomputation | Slightly understates fragility; a thought experiment |
 | Excluding **>50-author** papers from external edges and normalised impact | One 100+ author paper would dominate | Fractional counting | Documented in dashboard and report |
 | **Degrees of separation** = unweighted breadth-first search on the full co-authorship graph (same edges as `part5b`) | "Steps between two people" is the quantity a reader expects; matches the path lengths reported elsewhere | Weighted paths (1/joint papers) | One joint paper counts as much as twenty; the page shows one of possibly many equally short chains and says how many exist |
 | **Network growth**: author enters in the year of their first paper at the IIITs, a link in the year of the pair's first joint paper; cumulative, never removed | Observable in the data; one fixed force layout of the final graph so nodes do not move | Sliding windows (ties expire) | Shows when ties formed, not whether they are still active; yearly counts are computed in Python and the browser recomputes and matches them |
-| Author **profiles and search** cover every author in the network | A path or a table row should lead to the person behind it | Profiles for core faculty only | The public page now names all 4,041 authors (see §5) |
+| Faculty **profiles and search** cover every faculty member in the network | A path or a table row should lead to the person behind it | — | The public page names the 375 faculty (public directory information) |
 
 **Known biases.** OpenAlex coverage is weaker before 2018 and for Indian
 conference proceedings. IIITB authors rarely state a department, so departments
@@ -184,11 +194,15 @@ internal citation edges pointing outside the corpus were found. Remaining points
 
 | Decision | Rationale | Alternatives considered | Implication |
 |---|---|---|---|
+| **Faculty as the unit of analysis** | Instructor's review: "The analysis should be based on faculties." The course note asks for *faculty* publications and faculty-level metrics; the earlier networks had 9,451 nodes, mostly students and one-paper authors | Keep all authors and label roles (the previous version); count all papers but only faculty nodes | Nodes = 375 of the 418 regular faculty on the five official lists; papers = the 10,473 with ≥1 listed faculty author (62–83% of each institute's OpenAlex output). Students, postdocs, staff and former faculty are not nodes, and their papers count only with a listed co-author. The networks become much smaller and sparser (488 faculty links, 21 between institutes, 103 isolated faculty) and split into two blocs (ABV/IIITA/IIITB and IIITH/IIITD). The all-author results are kept locally in `outputs_backup_allauthors/` |
+| Faculty name matching | Lists write names differently from OpenAlex ("Jawahar C V", "Krishna Reddy P", "Pritish Kr. Varadwaj") | Exact or surname + first-initial matching only (missed several of the most prolific faculty) | Name parts may be in any order and written as initials; "Kr." = Kumar; an initial is not accepted for very common surnames; a name that fits two listed people stays unmatched. 43 listed faculty remain without papers (mostly recent joiners) |
+| One node per listed person | OpenAlex splits many faculty into several profiles (e.g. 7 profiles for P. Krishna Reddy) | Merge every matching profile; keep only the largest | The largest profile is the anchor; another joins only if it never shares a paper with it and shares a co-author (the section 2 rule). 50 common-name cases where profiles stayed apart are flagged for manual check |
+| Faculty rank from the list's designation | Seniority is the natural faculty-level variable for network position | Years since first paper | Professor / Associate / Assistant (designations such as "Professor & Dean" map to Professor). Professors hold 52% of brokerage; 42% of Assistant Professors have no faculty co-author |
 | Add IIIT Hyderabad (`I64189192`) and IIIT Delhi (`I119939252`) | Requested after review; same institute type, larger research output | — | All scripts are generic over `C.INSTITUTIONS`; colours use palette slots 1–4 and 7 (slot 5, magenta, stays reserved for links between institutes) |
 | Impact factor = OpenAlex `summary_stats.2yr_mean_citedness` of the venue | Same construction as the Clarivate JIF (citations in year Y to items of Y−1, Y−2 ÷ items), open data; Scimago's export is blocked for scripts | Clarivate JIF (licensed); Scimago "Cites/Doc (2y)" | Current value, not year-matched; bands ≥10, 5–10, <5. Q1 and IF ≥5 disagree for a third of Q1 papers, so both are shown |
-| Faculty vs students from the official web lists | OpenAlex has no role; the lists are the authoritative source | ORCID employment records (sparse); the old authorship-pattern heuristic | Conservative name matching (surname + compatible first name; initials not accepted for very common surnames; no contradicting middle names; ambiguous names left unmatched). Unlisted authors keep a heuristic label. Lists are current, so former faculty fall into "likely faculty (not listed)". Student lists are personal data and stay local |
-| Large-graph sampling | 9,451 authors make exact all-pairs paths and betweenness slow | Exact computation (≈1 h+) | Above 6,000 nodes: seeded sample of 2,000 sources for betweenness, path length and the distance matrix; diameter = largest eccentricity found (lower bound) |
-| Multilayer = co-authorship + author-to-author citation on the same nodes | Both layers exist for every author and answer "do they read each other or work together?" | A topic-similarity layer (dense cliques, no clear meaning) | Edge overlap is tested against a configuration model; the mutually connected giant component follows Buldyrev et al. (2010). An institute-level 4-layer multiplex is added |
+| Faculty vs students from the official web lists (superseded by the faculty-only analysis) | OpenAlex has no role; the lists are the authoritative source | ORCID employment records (sparse); the old authorship-pattern heuristic | Used in the previous version to label every author; the student lists are no longer used by the analysis and stay local |
+| Large-graph sampling | 9,451 authors made exact all-pairs paths and betweenness slow | Exact computation (≈1 h+) | Above 6,000 nodes: seeded sample of 2,000 sources. The faculty network (375 nodes) is computed exactly |
+| Multilayer = co-authorship + faculty-to-faculty citation on the same nodes | Both layers exist for every author and answer "do they read each other or work together?" | A topic-similarity layer (dense cliques, no clear meaning) | Edge overlap is tested against a configuration model; the mutually connected giant component follows Buldyrev et al. (2010). An institute-level 4-layer multiplex is added |
 | Saveetha: test size, who cites and topic before calling anything anomalous | A large institution cites more simply because it publishes more | Flag on raw citation counts (what made Saveetha look suspicious) | Saveetha's citing is proportional to its share of Indian output (1.09× vs 1.74× for other large citers) and does not come from the cited authors' co-author circle; the tests describe patterns, not intent |
 
 ## 6. Reproducibility and privacy
@@ -236,6 +250,5 @@ the repository owner's decision.
 author names and paper titles behind its networks, as the course requires. These
 are public bibliographic facts from OpenAlex, but publishing the page does make
 them visible. Since the search, profile and path features were added, the page
-embeds every one of the 9,451 authors (name, institute, department, role, papers per
-year, co-authors) and all 14,762 paper titles, not only the authors shown in
-tables and the explorer. The raw dataset files themselves are not published.
+embeds every one of the 375 faculty (name, institute, department, rank, papers per
+year, faculty co-authors) and all 10,473 paper titles. The raw dataset files themselves are not published.

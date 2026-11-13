@@ -51,3 +51,6 @@ outputs_backup_3inst/
 
 # institute student lists (personal data scraped for role matching; local only)
 reference/faculty_rosters/*_students.csv
+
+# local backup of the all-authors run (before the faculty-only change)
+outputs_backup_allauthors/

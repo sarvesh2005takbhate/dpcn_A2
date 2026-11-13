@@ -168,9 +168,9 @@ def chart_research_areas(df):
     t = A.research_areas(df, "field", 8)
     fig, ax = plt.subplots(figsize=(12, 4.6))
     x = np.arange(len(t.columns))
-    w = 0.26
+    w = 0.8 / len(C.INST_NAMES)
     for k, inst in enumerate(C.INST_NAMES):
-        ax.bar(x + (k - 1) * w, t.loc[inst].values, width=w - 0.02, color=COLORS[inst], label=inst)
+        ax.bar(x + (k - (len(C.INST_NAMES) - 1) / 2) * w, t.loc[inst].values, width=w - 0.02, color=COLORS[inst], label=inst)
     ax.set_xticks(x)
     ax.set_xticklabels([short(c, 22) for c in t.columns], rotation=20, ha="right")
     ax.set_ylabel("% of the institution's papers")
@@ -188,15 +188,15 @@ def chart_departments(adf, fac):
     piv = piv.reindex(columns=C.INST_NAMES, fill_value=0).sort_values(C.INST_NAMES[0])
     fig, ax = plt.subplots(figsize=(11, 4.4))
     y = np.arange(len(piv))
-    h = 0.26
+    h = 0.8 / len(C.INST_NAMES)
     for k, inst in enumerate(C.INST_NAMES):
-        ax.barh(y + (k - 1) * h, piv[inst].values, height=h - 0.02, color=COLORS[inst], label=inst)
+        ax.barh(y + (k - (len(C.INST_NAMES) - 1) / 2) * h, piv[inst].values, height=h - 0.02, color=COLORS[inst], label=inst)
     ax.set_yticks(y)
     ax.set_yticklabels(piv.index)
-    ax.set_xlabel("Papers with at least one author from the department")
+    ax.set_xlabel("Papers with at least one faculty member from the department")
     ax.set_title("Department-level output")
     ax.grid(axis="y", visible=False)
-    ax.legend(loc="lower right")
+    ax.legend(loc="upper right")
     save(fig, "07_departments.png")
 
 

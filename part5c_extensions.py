@@ -7,10 +7,11 @@ which the dashboard and the report read.
   quality      journal papers by Scimago quartile (Q1 / Q2 / Q3 / Q4 / unranked) and by
                impact-factor band (>=10, 5-10, <5; OpenAlex 2-year mean citedness),
                per institute and per year, plus the journals behind the >=10 band
-  roles        faculty vs students: official institute lists matched to authors
-               (group10_roles.py), how each role sits in the co-authorship network,
-               who builds the links between institutes, and a faculty-only network
-  gcc          giant connected component: size, which institutes and roles it
+  roles        faculty by rank (Professor / Associate / Assistant, from the official
+               institute lists): output, h-index, position in the faculty
+               co-authorship network, who builds the links between institutes,
+               and how much of each institute's output the listed faculty cover
+  gcc          giant connected component: size, which institutes and ranks it
                contains, what lies outside it, and how it grew year by year
   multilayer   a two-layer multiplex on the same authors - co-authorship and
                author-to-author citation - with edge overlap, degree correlation,
@@ -56,12 +57,12 @@ def coauthor_graph(o, fac):
     nodes = o["auth_metrics"]["nodes"]
     e = o["auth_edges"]
     e = e[e["edge_scope"].isin(["same_institution", "inter_group"])]
-    role = {(r.author_id, r.institution): r.role for r in fac.itertuples()}
-    role_any = dict(zip(fac["author_id"], fac["role"]))
+    rank = {(r.author_id, r.institution): r.rank for r in fac.itertuples()}
+    rank_any = dict(zip(fac["author_id"], fac["rank"]))
     G = nx.Graph()
     for k, v in sorted(nodes.items()):
         G.add_node(k, inst=v["institution"], name=v["name"],
-                   role=role.get((k, v["institution"]), role_any.get(k, "Occasional author")))
+                   role=rank.get((k, v["institution"]), rank_any.get(k, "Other")))
     first = e.groupby(["author_a_id", "author_b_id"])["year"].min()
     for (a, b), g in e.groupby(["author_a_id", "author_b_id"]):
         G.add_edge(a, b, weight=int(g["paper_doi"].nunique() or len(g)), year=int(first[(a, b)]))
@@ -120,7 +121,7 @@ def quality(df, fac):
         f = fac[(fac["institution"] == inst) & (fac["journal_papers"] > 0)]
         f = f.sort_values(["if_gt10_papers", "if_gt5_papers", "q1_papers"], ascending=False).head(10)
         out["top_faculty"][inst] = [
-            {"name": r.name, "role": r.role, "q1": int(r.q1_papers), "q2": int(r.q2_papers), "q3": int(r.q3_papers),
+            {"name": r.name, "role": r.rank, "q1": int(r.q1_papers), "q2": int(r.q2_papers), "q3": int(r.q3_papers),
              "q4": int(r.q4_papers), "if5": int(r.if_gt5_papers), "if10": int(r.if_gt10_papers)}
             for r in f.itertuples()]
     # does a high-quartile journal mean a high IF? (they measure different things)
@@ -138,80 +139,80 @@ def quality(df, fac):
 # ═════════════════════════════════════════════
 
 def roles(G, fac, adf):
-    out = {"order": R.ROLE_ORDER, "coverage": R.roster_coverage(fac), "sources": R.roster_sources()}
+    """Faculty by rank. Node attribute "role" holds the rank (R.RANKS)."""
+    scope = {}
+    try:
+        with open(C.FACULTY_SCOPE_JSON, encoding="utf-8") as fh:
+            scope = json.load(fh)
+    except OSError:
+        pass
+    audit = pd.read_csv(C.ROSTER_MATCH_CSV, dtype=str).fillna("") if os.path.exists(C.ROSTER_MATCH_CSV) else pd.DataFrame()
+    out = {"order": R.RANKS, "scope": scope, "sources": R.roster_sources()}
+    cov = {}
+    for i in C.INST_NAMES:
+        a = audit[audit["institution"] == i] if len(audit) else audit
+        f = fac[fac["institution"] == i]
+        cov[i] = {"listed": int(len(a)), "with_papers": int((a["status"] == "matched").sum()) if len(a) else 0,
+                  "ranks": {r: int((f["rank"] == r).sum()) for r in R.RANKS},
+                  "listed_ranks": {r: int((a["designation"].map(R.rank_of) == r).sum()) if len(a) else 0 for r in R.RANKS},
+                  "without_papers": sorted(a.loc[a["status"] != "matched", "roster_name"]) if len(a) else [],
+                  "merged_profiles": int((a["merged_records"].str.count(";") > 0).sum()) if len(a) else 0,
+                  "manual_check": int((a["needs_manual_check"] == "True").sum()) if len(a) else 0}
+    out["coverage"] = cov
+
     role = nx.get_node_attributes(G, "role")
     inst = nx.get_node_attributes(G, "inst")
-    bet = nx.betweenness_centrality(G, k=min(800, G.number_of_nodes()), seed=7) if G.number_of_nodes() > 2000 \
-        else nx.betweenness_centrality(G)
+    bet = nx.betweenness_centrality(G)
     deg = dict(G.degree())
     gcc = giant_nodes(G)
-    by_role = {}
-    for r in R.ROLE_ORDER:
+    fi = fac.set_index("author_id")
+    by_rank = {}
+    for r in R.RANKS:
         ns = [n for n in G if role[n] == r]
-        by_role[r] = {"authors": len(ns),
+        f = fi.loc[[n for n in ns if n in fi.index]]
+        by_rank[r] = {"faculty": len(ns),
+                      "median_papers": float(f["papers"].median()) if len(f) else 0,
+                      "median_h": float(f["h_index"].median()) if len(f) else 0,
+                      "q1_share_pct": pct(int(f["q1_papers"].sum()), int(f["journal_papers"].sum())) if len(f) else 0,
                       "mean_degree": round(float(np.mean([deg[n] for n in ns])), 2) if ns else 0,
                       "median_degree": float(np.median([deg[n] for n in ns])) if ns else 0,
+                      "isolated_pct": pct(sum(1 for n in ns if deg[n] == 0), len(ns)),
                       "betweenness_share_pct": round(sum(bet[n] for n in ns) / max(sum(bet.values()), 1e-12) * 100, 1),
                       "in_gcc_pct": pct(sum(1 for n in ns if n in gcc), len(ns))}
-    out["network_by_role"] = by_role
+    out["network_by_role"] = by_rank
 
-    def group(r):
-        if r in R.FACULTY_LIKE:
-            return "faculty"
-        if r in R.STUDENT_LIKE:
-            return "student"
-        return "occasional"
-    pairs, inter_pairs = Counter(), Counter()
+    pairs, inter_pairs, endpoints = Counter(), Counter(), Counter()
     for a, b in G.edges():
-        k = "–".join(sorted((group(role[a]), group(role[b]))))
+        k = "–".join(sorted((role[a], role[b]), key=R.RANKS.index))
         pairs[k] += 1
         if inst[a] != inst[b]:
             inter_pairs[k] += 1
-    out["edge_role_mix"] = {"all": dict(pairs), "between_institutes": dict(inter_pairs),
-                            "between_institutes_total": sum(inter_pairs.values())}
-    # who carries the links between institutes?
-    endpoints = Counter()
-    for a, b in G.edges():
-        if inst[a] != inst[b]:
             endpoints[role[a]] += 1
             endpoints[role[b]] += 1
-    out["inter_link_endpoints_by_role"] = {r: int(endpoints.get(r, 0)) for r in R.ROLE_ORDER}
-    top_bet = sorted(G, key=lambda n: (-bet[n], n))[:50]
-    out["top50_brokers_by_role"] = dict(Counter(role[n] for n in top_bet))
+    out["edge_role_mix"] = {"all": dict(pairs), "between_institutes": dict(inter_pairs),
+                            "between_institutes_total": sum(inter_pairs.values())}
+    out["inter_link_endpoints_by_role"] = {r: int(endpoints.get(r, 0)) for r in R.RANKS}
+    top_bet = sorted(G, key=lambda n: (-bet[n], n))[:20]
+    out["top20_brokers_by_role"] = dict(Counter(role[n] for n in top_bet))
+    out["top_brokers"] = [{"name": G.nodes[n]["name"], "institution": inst[n], "rank": role[n],
+                           "degree": deg[n], "betweenness": round(bet[n], 4)} for n in top_bet[:10]]
 
-    # faculty-only network: listed faculty linked if they co-authored a paper
-    F = G.subgraph([n for n in G if role[n] in ("Faculty", "Adjunct / visiting faculty")]).copy()
-    fg = giant_nodes(F)
-    out["faculty_network"] = {
-        "nodes": F.number_of_nodes(), "edges": F.number_of_edges(),
-        "components": nx.number_connected_components(F) if F.number_of_nodes() else 0,
-        "isolated": sum(1 for n in F if F.degree(n) == 0),
-        "giant_nodes": len(fg), "giant_share_pct": pct(len(fg), F.number_of_nodes()),
-        "inter_institute_links": sum(1 for a, b in F.edges() if inst[a] != inst[b]),
-        "giant_institutes": dict(Counter(inst[n] for n in fg)),
-        "avg_clustering": round(nx.average_clustering(F), 3) if F.number_of_nodes() else 0,
-    }
-    # faculty linked through a shared student (two-step projection)
-    stu = [n for n in G if role[n] in R.STUDENT_LIKE]
-    via = Counter()
-    for s_ in stu:
-        fs = sorted(v for v in G[s_] if role[v] in ("Faculty", "Adjunct / visiting faculty"))
-        for a, b in combinations(fs, 2):
-            if not F.has_edge(a, b):
-                via[(a, b)] += 1
-    out["faculty_network"]["extra_pairs_via_shared_student"] = len(via)
-    out["faculty_network"]["extra_inter_institute_pairs_via_student"] = sum(1 for a, b in via if inst[a] != inst[b])
+    # rank tests: do professors have more faculty co-authors than assistant professors?
+    dp = [deg[n] for n in G if role[n] == "Professor"]
+    da = [deg[n] for n in G if role[n] == "Assistant Professor"]
+    if len(dp) > 5 and len(da) > 5:
+        u = stats.mannwhitneyu(dp, da, alternative="greater")
+        out["prof_vs_asst_degree"] = {"professor_median": float(np.median(dp)), "assistant_median": float(np.median(da)),
+                                      "mannwhitney_p": float(u.pvalue)}
 
-    # role mix per institute and papers with at least one listed faculty author
+    # share of each institute's output (papers with any IIIT author) covered by its listed faculty
     per = {}
-    rmap = dict(zip(zip(fac["author_id"], fac["institution"]), fac["role"]))
-    a2 = adf.assign(role=[rmap.get((a, i), "") for a, i in zip(adf["author_id"], adf["institution"])])
     for i in C.INST_NAMES:
-        s = a2[a2["institution"] == i]
-        papers = s.groupby("openalex_id")["role"].apply(set)
-        per[i] = {"papers_with_listed_faculty_pct": pct(int(papers.map(lambda r: bool(r & {"Faculty", "Adjunct / visiting faculty"})).sum()), len(papers)),
-                  "papers_with_listed_student_pct": pct(int(papers.map(lambda r: bool(r & {"PhD scholar", "Student (MS / M.Tech / B.Tech)"})).sum()), len(papers)),
-                  "first_author_role": dict(Counter(s[s["author_position"] == "first"]["role"]))}
+        si = scope.get("institutes", {}).get(i, {})
+        per[i] = {"papers_with_listed_faculty_pct": pct(si.get("papers_with_listed_faculty", 0),
+                                                        si.get("papers_all_affiliated_authors", 0)),
+                  "faculty_authorship_share_pct": pct(si.get("authorships_listed_faculty", 0), si.get("authorships_all", 0)),
+                  "first_author_rank": dict(Counter(fac.loc[fac["institution"] == i, "rank"]))}
     out["papers_by_role"] = per
     return out
 
@@ -251,7 +252,7 @@ def gcc_analysis(G, o, structure):
                           "share_of_gcc_pct": pct(gi[i], len(gc))} for i in C.INST_NAMES}
     gr = Counter(role[n] for n in gc)
     rs = Counter(role.values())
-    out["by_role"] = {r: {"authors": rs[r], "in_gcc_pct": pct(gr[r], rs[r])} for r in R.ROLE_ORDER}
+    out["by_role"] = {r: {"authors": rs[r], "in_gcc_pct": pct(gr[r], rs[r])} for r in R.RANKS}
     # structure of the GCC vs the whole graph
     deg_in = [d for _, d in H.degree()]
     deg_out = [G.degree(n) for n in G if n not in gc]
@@ -579,7 +580,7 @@ def anomalies(o, fac):
                        "citations": sum(cit), "saveetha_citations": sc, "saveetha_share_pct": pct(sc, sum(cit)),
                        "h": C.hindex(cit), "h_without": C.hindex(cit_wo)})
     rows_a.sort(key=lambda r: -r["saveetha_citations"])
-    role = dict(zip(zip(fac["name"], fac["institution"]), fac["role"]))
+    role = dict(zip(zip(fac["name"], fac["institution"]), fac["rank"]))
     for r in rows_a:
         r["role"] = role.get((r["name"], r["institution"]), "")
     sv["affected_authors"] = rows_a[:15]
@@ -763,14 +764,14 @@ def main():
     print("=" * 65)
     o = A.load_outputs()
     fac = o["fac"]
-    if "role" not in fac:
-        raise SystemExit("faculty table has no role column - re-run part1b_enrich_data.py")
+    if "rank" not in fac:
+        raise SystemExit("faculty table has no rank column - re-run part1b_enrich_data.py")
     G = coauthor_graph(o, fac)
     print(f"  co-authorship graph: {G.number_of_nodes()} authors, {G.number_of_edges()} links")
     E = {}
     print("  [1/5] quartiles and impact factor ...")
     E["quality"] = quality(o["df"], fac)
-    print("  [2/5] faculty vs students ...")
+    print("  [2/5] faculty by rank ...")
     E["roles"] = roles(G, fac, o["adf"])
     print("  [3/5] giant connected component ...")
     E["gcc"] = gcc_analysis(G, o, o["structure"])
@@ -784,7 +785,8 @@ def main():
     q = E["quality"]["by_inst"]
     for i in C.INST_NAMES:
         print(f"    {i:18s} Q1-Q4 {[q[i]['quartile_counts'][k] for k in QUARTS]}  IF>=5 {q[i]['if_gt5']}  IF>=10 {q[i]['if_gt10']}")
-    print("    roles:", {i: E["roles"]["coverage"][i]["roles"] for i in C.INST_NAMES})
+    print("    ranks:", {i: E["roles"]["coverage"][i]["ranks"] for i in C.INST_NAMES})
+    print("    by rank:", json.dumps(E["roles"]["network_by_role"], indent=1), E["roles"].get("prof_vs_asst_degree"))
     m = E["multilayer"]
     print(f"    multiplex: overlap {m['overlap']}, rho={m['degree_spearman']}, mutual GCC={m['mutual_gcc']}")
     sv = E["anomalies"]["saveetha"]

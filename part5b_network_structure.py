@@ -446,8 +446,9 @@ def centralities(gc, bet_full):
         mass[gc.nodes[n]["inst"]] += v ** 2
     return {"spearman": corr, "top10": top,
             "eigenvector_mass_pct": {i: round(mass[i] * 100, 1) for i in C.INST_NAMES},
-            "closeness_mean_by_institute": {i: round(float(np.mean([clo[n] for n in gc if gc.nodes[n]["inst"] == i])), 4)
-                                            for i in C.INST_NAMES}}
+            # None when an institute has no faculty in the giant component
+            "closeness_mean_by_institute": {i: (round(float(np.mean(v)), 4) if v else None) for i, v in
+                                            ((i, [clo[n] for n in gc if gc.nodes[n]["inst"] == i]) for i in C.INST_NAMES)}}
 
 
 def citation_matrix(o):
@@ -558,46 +559,61 @@ def findings(S):
     weak = min(C.INST_NAMES, key=lambda i: (attach[i], i))
     weak_d = [dist(weak, j) for j in C.INST_NAMES if j != weak and dist(weak, j) is not None]
     jac = sorted(sp["jaccard"].items(), key=lambda kv: -kv[1])
+    sc = S.get("faculty_scope", {}).get("all", {})
+    comp = S.get("component_composition", [])
+    if comp and len(comp[0]) == len(C.INST_NAMES):
+        giant_txt = f"All five appear in the largest component ({co['giant_nodes']:,} faculty)."
+    elif comp:
+        giant_txt = (f"The largest component ({co['giant_nodes']:,} faculty) contains "
+                     + ", ".join(f"{k} {v}" for k, v in sorted(comp[0].items(), key=lambda kv: -kv[1]))
+                     + (f"; the second ({sum(comp[1].values())}) contains "
+                        + ", ".join(f"{k} {v}" for k, v in sorted(comp[1].items(), key=lambda kv: -kv[1]))
+                        if len(comp) > 1 else "") + ".")
+    else:
+        giant_txt = ""
     return [
-        {"title": "Institutional islands inside one connected component",
-         "observation": (f"Only {mx['inter_links_total']:,} of {co['edges']:,} co-author links ({mx['inter_share_pct']}%) join "
-                         f"two different IIITs, although all five sit in one giant component of {co['giant_nodes']:,} authors."),
+        {"title": "Faculty of the five IIITs form institutional islands",
+         "observation": (f"Only {mx['inter_links_total']:,} of {co['edges']:,} faculty co-author links ({mx['inter_share_pct']}%) join "
+                         f"two different IIITs. " + giant_txt),
          "evidence": (f"A degree-preserving (configuration-model) null expects {mx['inter_links_expected_total']:,.0f} "
                       f"inter-institute links; observed / expected for the largest pairs: {ratios}. "
                       f"{cs['single_institute_communities_pct']}% of the {cs['communities_10plus']} Louvain communities "
-                      f"with >=10 authors are >=90% one institute; institute assortativity = "
+                      f"with >=10 faculty are >=90% one institute; institute assortativity = "
                       f"{sens['conservative']['institution_assortativity']}."),
-         "meaning": "Collaboration is organised inside each institute; the five IIITs do not form a shared research community.",
+         "meaning": "Faculty collaborate inside their own institute; the five IIITs do not form a shared research community.",
          "caveat": ("Edges come from OpenAlex affiliations on papers; a missing affiliation hides a link. Low mixing is "
                     "common for institutes in different cities and is not by itself a sign of weak research.")},
-        {"title": f"Ties between IIITs are largely carried by people who moved; the strongest is {dash(top['pair'])}",
-         "observation": (f"Co-author links between institutes: {top3}. {dash(top['pair'])} also has "
-                         f"{top['copublished_papers']} co-published papers."),
-         "evidence": (f"{mx['inter_papers_with_multi_affiliated_author']} of the {mx['inter_papers']} papers that link two IIITs "
-                      f"include an author whom OpenAlex places at both institutes ({br['multi_affiliated_authors']} such authors, "
-                      f"{br['multi_affiliated_core']} of them core faculty)."),
-         "meaning": ("Inter-IIIT ties mostly follow career mobility (a PhD at one IIIT and a faculty post at another) - "
-                     "relationships between people more than institutional partnerships."),
-         "caveat": ("'Placed at both' is inferred from affiliations over 2016-2026; it may be a move, a dual "
-                    "affiliation, or an OpenAlex affiliation error. We cannot tell these apart without CVs.")},
+        {"title": f"Direct faculty ties between IIITs are rare; the strongest is {dash(top['pair'])}",
+         "observation": (f"Faculty co-author links between institutes: {top3}. {dash(top['pair'])} also has "
+                         f"{top['copublished_papers']} co-published papers; "
+                         f"{sum(1 for r in pairs if r['coauthor_links'] == 0)} of the {len(pairs)} institute pairs have none."),
+         "evidence": (f"{mx['inter_papers']} papers carry listed faculty of two IIITs. "
+                      f"{br['bridge_authors']} faculty ({br['bridge_share_pct']}%) have a co-author on another IIIT's faculty list."),
+         "meaning": ("Ties between the IIITs rest on a few individual faculty partnerships, not on institutional "
+                     "programmes; the geographically close IIITA and ABV are the exception."),
+         "caveat": ("Faculty lists are current (2026); a faculty member who moved between two IIITs is counted only at "
+                    "the institute that lists them now, which can hide a past tie.")},
         {"title": f"{weak} is the most weakly attached institute",
-         "observation": (f"Removing {attach[weak]} authors is enough to cut {A_(weak)} off from even its best-connected "
+         "observation": (f"Removing {attach[weak]} faculty is enough to cut {A_(weak)} off from even its best-connected "
                          f"partner IIIT (minimum node cut); for the others: "
                          + ", ".join(f"{A_(i)} {attach[i]}" for i in C.INST_NAMES if i != weak) + "."),
-         "evidence": (f"Mean shortest-path distance from {A_(weak)} authors to the other institutes: "
+         "evidence": (f"Mean shortest-path distance from {A_(weak)} faculty to the other institutes: "
                       f"{min(weak_d) if weak_d else '-'} to {max(weak_d) if weak_d else '-'} steps, vs {dist(weak, weak)} inside {A_(weak)}."),
-         "meaning": f"{A_(weak)} is structurally peripheral to the group; its attachment runs through a handful of individuals.",
-         "caveat": "Node cuts are computed on the 2016-2026 co-authorship snapshot; one new joint project could change them."},
+         "meaning": f"{A_(weak)} is structurally peripheral to the group; its attachment runs through a handful of faculty.",
+         "caveat": ("Node cuts are computed on the 2016-2026 co-authorship snapshot; one new joint project could change them."
+                    + (f" Distances are measured inside the largest component, which holds no faculty of "
+                       f"{', '.join(A_(i) for i in C.INST_NAMES if comp and A_(i) not in comp[0])}."
+                       if comp and len(comp[0]) < len(C.INST_NAMES) else ""))},
         {"title": "Cross-institute reachability collapses when brokers are removed",
-         "observation": (f"{rb['targeted']['cross_reach'][0] * 100:.0f}% of cross-institute author pairs are joined by some path. "
-                         f"Removing the 1% of authors with the highest betweenness cuts this to "
+         "observation": (f"{rb['targeted']['cross_reach'][0] * 100:.0f}% of cross-institute faculty pairs are joined by some path. "
+                         f"Removing the 1% of faculty with the highest betweenness cuts this to "
                          f"{rb['targeted']['cross_reach'][i1] * 100:.0f}%, and 2% to {rb['targeted']['cross_reach'][i2] * 100:.1f}%."),
-         "evidence": (f"Removing the same number of random authors leaves {rb['random']['cross_reach'][i1] * 100:.0f}% and "
+         "evidence": (f"Removing the same number of random faculty leaves {rb['random']['cross_reach'][i1] * 100:.0f}% and "
                       f"{rb['random']['cross_reach'][i2] * 100:.0f}% (10 runs, sd <= {max(rb['random']['cross_reach_sd'][:i2 + 1]) * 100:.1f} pp). "
-                      f"The top 5% of authors hold {co['degree']['share_of_degree_top5pct']}% of all co-author ties; max degree "
+                      f"The top 5% of faculty hold {co['degree']['share_of_degree_top5pct']}% of all co-author ties; max degree "
                       f"{co['degree']['max']} vs {S['er_baseline']['max_degree_sim']} in an ER graph of the same size."),
          "meaning": ("The network is robust to random loss but fragile to targeted loss - the signature of a hub-dominated "
-                     "(heavy-tailed) network. Connectivity between institutes depends on a few dozen senior faculty."),
+                     "(heavy-tailed) network. Connectivity between institutes depends on a handful of faculty."),
          "caveat": "Betweenness is computed once (non-adaptive removal); removing a person is a thought experiment, not a forecast."},
         {"title": "The IIITs are connected indirectly, through the same IITs",
          "observation": (f"{sp['common_to_all']} Indian institutions co-author with all five IIITs; the strongest common "
@@ -611,17 +627,18 @@ def findings(S):
                      "national IITs and IISc. The IIITs occupy similar positions (common collaborators) without many direct ties."),
          "caveat": ("Shared partners show similar positions, not information flow between the IIITs through those "
                     "partners. Partner cities are read from the institution names, not from the data.")},
-        {"title": "Author disambiguation changes the inter-institution picture",
-         "observation": ("Merging authors only because their names match (the earlier rule) creates false bridges between "
-                         "institutes; the conservative rule removes them."),
-         "evidence": (f"Name-only identities: {sens['name_only']['inter_institute_links']} inter-institute links, assortativity "
-                      f"{sens['name_only']['institution_assortativity']}, giant-component path length approx. "
-                      f"{sens['name_only']['giant_path_length_sampled']}. Conservative: {sens['conservative']['inter_institute_links']} links, "
-                      f"{sens['conservative']['institution_assortativity']}, approx. {sens['conservative']['giant_path_length_sampled']}."),
-         "meaning": ("Common Indian names make naive merging overstate integration and shorten paths. Bridge findings are "
-                     "only credible with careful identity rules."),
-         "caveat": ("The conservative rule may still split one person into several nodes (e.g. name spelling variants), "
-                    "which slightly lowers degree and can lengthen paths; see DECISIONS.md.")},
+        {"title": "Many listed faculty co-author with no other listed faculty",
+         "observation": (f"{co['isolated_nodes']} of {co['nodes']} faculty ({co['isolated_nodes'] / co['nodes'] * 100:.0f}%) share "
+                         f"no paper with another listed faculty member of the five IIITs; the median faculty member has "
+                         f"{co['degree']['median']:g} faculty co-authors."),
+         "evidence": (f"{sc.get('listed_faculty_with_papers', 0)} of {sc.get('listed_faculty', 0)} listed faculty have papers in "
+                      f"2016-2026; their papers are {sc.get('papers_with_listed_faculty', 0):,} of the "
+                      f"{sc.get('papers_all_affiliated_authors', 0):,} papers with any author at the five IIITs "
+                      f"({sc.get('papers_with_listed_faculty', 0) / max(sc.get('papers_all_affiliated_authors', 1), 1) * 100:.0f}%)."),
+         "meaning": ("A typical faculty member publishes with their own students and with partners outside the five "
+                     "IIITs rather than with faculty colleagues, so the faculty network is sparse and fragmented."),
+         "caveat": ("Faculty lists are current; papers by former faculty and by people who never appear on a list "
+                    "(students, postdocs, staff) are outside the faculty dataset.")},
     ]
 
 
@@ -720,6 +737,14 @@ def main():
     kg = 2 * gc.number_of_edges() / gc.number_of_nodes()
     S["reference_paths"] = reference_paths(gc.number_of_nodes(), S["coauthorship"]["giant_avg_path_length"], kg)
     S["identity_sensitivity"] = identity_sensitivity(o, G)
+    comps = sorted(nx.connected_components(G), key=len, reverse=True)
+    S["component_composition"] = [dict(Counter(ABBR.get(G.nodes[n]["inst"], G.nodes[n]["inst"]) for n in c))
+                                  for c in comps[:3]]
+    try:
+        with open(C.FACULTY_SCOPE_JSON, encoding="utf-8") as fh:
+            S["faculty_scope"] = json.load(fh)
+    except OSError:
+        S["faculty_scope"] = {}
     try:
         S["findings"] = findings(S)
     except Exception as e:      # never lose the (slow) structure results over a text template
