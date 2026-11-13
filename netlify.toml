@@ -7,6 +7,10 @@
 # folder with the Netlify CLI or Netlify Drop (see README, "Deployment").
 
 [build]
+  # Skip every Git-triggered build: site/ is not in the repository, so a build from
+  # GitHub can only fail. Deploys happen by uploading the locally built site/
+  # (Netlify Drop or `netlify deploy --dir=site --prod`), which ignores this.
+  ignore = "exit 0"
   publish = "site"
   command = "echo 'Prebuilt locally: run part4_dashboard.py, then deploy site/' && test -f site/index.html"
 
